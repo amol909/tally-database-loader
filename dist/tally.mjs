@@ -83,7 +83,7 @@ class _tally {
     importData() {
         return new Promise(async (resolve, reject) => {
             try {
-                logger.logMessage('Tally to Database | version: 1.0.42');
+                logger.logMessage('Tally to Database | version: 1.0.43');
                 let pathTallyExportDefinition = this.config.definition;
                 if (pathTallyExportDefinition.endsWith('.yaml')) {
                     //Load YAML export definition file
