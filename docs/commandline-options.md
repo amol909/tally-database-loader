@@ -1,40 +1,93 @@
 ## Commandline Options
-Utility is completely driven by configuration specified in **config.json** file. In case if specific configuration(s) needs to be overriden without changing it in config file, it can be done using commandline switches as follows:
+
+The preferred terminal entrypoint is now:
 
 ```bat
-node ./dist/index.mjs [[--option 01] [value 01] [--option 02] [value 02] ...]
+tallydb
 ```
 
-**option**: Syntax for option is **--parent-child** , *parent* is the main config name followed by *child* is the sub-config name in **config.json** . (Refer example for further explanation)
+See [CLI documentation](cli.md) for the full command reference.
 
-**value**: Value of config for corresponsing option
+The utility is still driven by **config.json**. Runtime overrides can be supplied to `tallydb sync` without editing the config file.
 
-### Examples:
+### Friendly Options
 
-**Scenario 01:** We need to set from & to date dynamically (without changing config file), lets say **FY 2019-20 Q3**, then below is the command for that
 ```bat
-node ./dist/index.mjs --tally-fromdate "2019-10-01" --tally-todate "2019-12-31"
+tallydb sync --from 2025-04-01 --to 2026-03-31
+tallydb sync --company "Reliance Industries" --schema client_reliance
+tallydb sync --sync-mode incremental
+tallydb sync --once
+tallydb sync --frequency 5
 ```
 
-**Scenario 02:** You have a tally company named *Reliance Industries*, created database of it by name *client_reliance* and want to export **FY 2019-20**  Then below is the command for that
+Common mappings:
+
+| Option | Config value |
+| --- | --- |
+| `--from` | `tally.fromdate` |
+| `--to` | `tally.todate` |
+| `--company` | `tally.company` |
+| `--schema` | `database.schema` |
+| `--db-server` | `database.server` |
+| `--db-port` | `database.port` |
+| `--sync-mode` | `tally.sync` |
+
+Operational flags:
+
 ```bat
-node ./dist/index.mjs --tally-fromdate "2019-10-01" --tally-todate "2019-12-31" --tally-company "Reliance Industries" --database-schema client_reliance
+tallydb sync --master false
+tallydb sync --transaction false
+tallydb sync --truncate false
 ```
 
-**Scenario 03:** We need to sync data for multiple companies of Tally. So, this requires creation of separate database for each company. And then sync of all the companies in one go can be done like this
+### Continuous Sync
+
+`config.json` can persist continuous sync by setting `tally.frequency` greater than `0`.
+
+Runtime-only mode overrides:
+
 ```bat
-node ./dist/index.mjs --database-schema tallydb_airtel --tally-company "Bharti Airtel"
-node ./dist/index.mjs --database-schema tallydb_voda_idea --tally-company "Vodafone Idea Ltd FY 2021-22" --tally-fromdate "2021-04-01" --tally-todate "2022-03-31"
-node ./dist/index.mjs --database-schema tallydb_jio --tally-company "Reliance Jio from (01-Apr-2022)"
+tallydb sync --once
+tallydb sync --frequency 5
 ```
 
+`--once` and `--frequency` do not edit `config.json`.
 
-**Scenario 04:** Your have a single Tally company with 3 years of data FY 2017-18, FY 2018-19 and FY 2019-20 in it. Full sync for 3 years in single go by setting from-to dates is taking long time with Tally using up large amount of RAM. This can be setup as below with first line of syncing both master and transactions for first year, and then subsequent sync only pushing transactions of that year
+### Legacy Override Syntax
+
+Legacy nested overrides remain accepted by `tallydb sync`:
+
 ```bat
-node ./dist/index.mjs --tally-fromdate "2017-04-01" --tally-todate "2018-03-31"
-node ./dist/index.mjs --tally-fromdate "2018-04-01" --tally-todate "2019-03-31" --tally-master false --tally-truncate false
-node ./dist/index.mjs --tally-fromdate "2019-04-01" --tally-todate "2020-03-31" --tally-master false --tally-truncate false
+tallydb sync [[--option 01] [value 01] [--option 02] [value 02] ...]
 ```
 
-The first line instructions sync to run with normal behaviour (with default mode of clear database and sync).
-For next 2 years, commandline instructs utility to exclude master from sync (as they were pushed already in previous step), and suppress database clearing, since we are simply pushing (or adding) current year transactions to existing database.
+**option** syntax is `--parent-child`, where `parent` is the main config name and `child` is the sub-config name in **config.json**.
+
+Example:
+
+```bat
+tallydb sync --tally-fromdate "2019-10-01" --tally-todate "2019-12-31"
+```
+
+Example with company and schema:
+
+```bat
+tallydb sync --tally-fromdate "2019-10-01" --tally-todate "2019-12-31" --tally-company "Reliance Industries" --database-schema client_reliance
+```
+
+Multiple company sync can still be scripted by running `tallydb sync` more than once:
+
+```bat
+tallydb sync --database-schema tallydb_airtel --tally-company "Bharti Airtel"
+tallydb sync --database-schema tallydb_voda_idea --tally-company "Vodafone Idea Ltd FY 2021-22" --tally-fromdate "2021-04-01" --tally-todate "2022-03-31"
+tallydb sync --database-schema tallydb_jio --tally-company "Reliance Jio from (01-Apr-2022)"
+```
+
+For multi-year imports, use runtime operational flags:
+
+```bat
+tallydb sync --tally-fromdate "2017-04-01" --tally-todate "2018-03-31"
+tallydb sync --tally-fromdate "2018-04-01" --tally-todate "2019-03-31" --tally-master false --tally-truncate false
+tallydb sync --tally-fromdate "2019-04-01" --tally-todate "2020-03-31" --tally-master false --tally-truncate false
+```
+

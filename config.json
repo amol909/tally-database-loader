@@ -1,23 +1,22 @@
 {
     "database": {
-        "technology": "mssql",
-        "server": "localhost",
-        "port": 0,
+        "technology": "postgres",
+        "server": "103.173.135.19",
+        "port": 5432,
         "ssl": false,
-        "schema": "tallydb",
-        "username": "sa",
-        "password": "admin",
+        "schema": "tally-connector",
+        "username": "ghostpepper",
+        "password": "Techno_542%",
         "loadmethod": "file"
     },
     "tally": {
         "definition": "tally-export-config.yaml",
         "server": "localhost",
         "port": 9000,
-        "fromdate": "2025-04-01",
-        "todate": "2026-03-31",
+        "fromdate": "auto",
+        "todate": "auto",
         "sync": "full",
-        "batchsize": 5000,
         "frequency": 0,
-        "company": ""
+        "company": "Bhrama Enterprises"
     }
 }

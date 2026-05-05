@@ -2,10 +2,16 @@
   "name": "tally-database-loader",
   "version": "1.0.0",
   "description": "",
-  "main": "index.mjs",
+  "main": "dist/cli.mjs",
   "type": "module",
+  "bin": {
+    "tallydb": "./dist/cli.mjs",
+    "tally-db-connector": "./dist/cli.mjs"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p src/tsconfig.json",
+    "start": "node ./dist/cli.mjs",
+    "test": "npm run build"
   },
   "author": "",
   "license": "ISC",
@@ -17,10 +23,14 @@
     "@types/node": "^24.1.0",
     "@types/pg": "^8.15.4",
     "@types/pg-copy-streams": "^1.2.5",
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.9.0",
+    "@inquirer/prompts": "^8.4.2",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
     "js-yaml": "^4.1.0",
     "mysql2": "^3.15.3",
     "pg": "^8.16.0",

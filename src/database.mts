@@ -21,8 +21,16 @@ class _database {
         try {
             this.config = JSON.parse(fs.readFileSync('./config.json', 'utf8'))['database'];
         } catch (err) {
-            logger.logError('database()', err);
-            throw err;
+            this.config = {
+                technology: 'mssql',
+                server: 'localhost',
+                port: 0,
+                schema: 'tallydb',
+                ssl: false,
+                username: '',
+                password: '',
+                loadmethod: 'file'
+            };
         }
     }
 

@@ -5,23 +5,37 @@ import { utility } from './utility.mjs';
 
 class _logger {
 
-    private streamMessage: fs.WriteStream;
-    private streamError: fs.WriteStream;
+    private streamMessage: fs.WriteStream | undefined;
+    private streamError: fs.WriteStream | undefined;
     private flgErrorLogged = false;
+    private consoleEnabled = true;
 
     constructor() {
-        if (fs.existsSync('./import-log.txt'))
-            fs.rmSync('./import-log.txt');
-        if (fs.existsSync('./error-log.txt'))
-            fs.rmSync('./error-log.txt');
+    }
 
+    startRun() {
+        this.closeStreams();
+        this.flgErrorLogged = false;
+        this.consoleEnabled = true;
         this.streamMessage = fs.createWriteStream('./import-log.txt', { encoding: 'utf-8' });
         this.streamError = fs.createWriteStream('./error-log.txt', { encoding: 'utf-8' });
     }
 
+    setConsoleEnabled(enabled: boolean) {
+        this.consoleEnabled = enabled;
+    }
+
+    private ensureStreams() {
+        if (!this.streamMessage || !this.streamError) {
+            this.streamMessage = fs.createWriteStream('./import-log.txt', { encoding: 'utf-8', flags: 'a' });
+            this.streamError = fs.createWriteStream('./error-log.txt', { encoding: 'utf-8', flags: 'a' });
+        }
+    }
+
     logMessage(message: string, ...params: any[]): void {
-        console.log(message, ...params); //graphical console
-        this.streamMessage.write(util.format(message, ...params) + '\r\n');
+        this.ensureStreams();
+        if (this.consoleEnabled) console.log(message, ...params); //graphical console
+        this.streamMessage?.write(util.format(message, ...params) + '\r\n');
 
         if(process.send) { // GUI thread based invoke
             process.send(util.format(message, ...params) + '\r\n');
@@ -30,6 +44,7 @@ class _logger {
 
     logError(fnInfo: string, err: any): void {
         if (!this.flgErrorLogged) {
+            this.ensureStreams();
             this.flgErrorLogged = true;
             let errorLog = '';
             if (!fnInfo.endsWith(')'))
@@ -47,14 +62,16 @@ class _logger {
                 }
             }
             errorLog += '-'.repeat(80) + '\r\n\r\n\r\n';
-            console.error(errorLog); //graphical console
-            this.streamError.write(errorLog);
+            if (this.consoleEnabled) console.error(errorLog); //graphical console
+            this.streamError?.write(errorLog);
         }
     }
 
     closeStreams() {
-        this.streamMessage.close();
-        this.streamError.close();
+        this.streamMessage?.close();
+        this.streamError?.close();
+        this.streamMessage = undefined;
+        this.streamError = undefined;
     }
 }
 let logger = new _logger();

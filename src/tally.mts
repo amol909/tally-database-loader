@@ -46,8 +46,6 @@ class _tally {
                 sync: 'full',
                 batchsize: 5000
             };
-            logger.logError('tally()', err);
-            throw err;
         }
     }
 
@@ -666,6 +664,31 @@ class _tally {
             } catch (err) {
                 logger.logError('tally.importData()', err);
                 resolve();
+            }
+        });
+    }
+
+    testConnection(): Promise<void> {
+        return new Promise<void>(async (resolve, reject) => {
+            try {
+                await this.postTallyXML('');
+                resolve();
+            } catch (err) {
+                reject(err);
+            }
+        });
+    }
+
+    listCompanies(): Promise<companyInfo[]> {
+        return new Promise<companyInfo[]>(async (resolve, reject) => {
+            try {
+                const companies = await this.fetchTallyCompanyList();
+                resolve(companies.map((company: any) => ({
+                    ...company,
+                    iscompanyactive: !!(company.iscompanyactive || company.isactivecompany)
+                })));
+            } catch (err) {
+                reject(err);
             }
         });
     }

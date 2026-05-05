@@ -41,8 +41,6 @@ class _tally {
                 sync: 'full',
                 batchsize: 5000
             };
-            logger.logError('tally()', err);
-            throw err;
         }
     }
     updateCommandlineConfig(lstConfigs) {
@@ -626,6 +624,31 @@ class _tally {
             catch (err) {
                 logger.logError('tally.importData()', err);
                 resolve();
+            }
+        });
+    }
+    testConnection() {
+        return new Promise(async (resolve, reject) => {
+            try {
+                await this.postTallyXML('');
+                resolve();
+            }
+            catch (err) {
+                reject(err);
+            }
+        });
+    }
+    listCompanies() {
+        return new Promise(async (resolve, reject) => {
+            try {
+                const companies = await this.fetchTallyCompanyList();
+                resolve(companies.map((company) => ({
+                    ...company,
+                    iscompanyactive: !!(company.iscompanyactive || company.isactivecompany)
+                })));
+            }
+            catch (err) {
+                reject(err);
             }
         });
     }
