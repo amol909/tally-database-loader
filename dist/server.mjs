@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import child_process from 'node:child_process';
+import path from 'node:path';
 import { WebSocketServer } from 'ws';
 const httpPort = 8997;
 const wsPort = 8998;
@@ -25,8 +26,16 @@ function configObjectToCommandLineArr(obj) {
 }
 function runSyncProcess(configObj) {
     let cmdArgs = configObjectToCommandLineArr(configObj);
-    syncProcess = child_process.fork('./dist/index.mjs', cmdArgs);
-    syncProcess.on('message', (msg) => wsServer.clients.forEach((wsClient) => wsClient.send(msg.toString())));
+    const packagedCli = path.join(path.dirname(process.execPath), 'tallydb.exe');
+    if (fs.existsSync(packagedCli)) {
+        syncProcess = child_process.spawn(packagedCli, ['sync', ...cmdArgs], { cwd: process.cwd() });
+        syncProcess.stdout?.on('data', (chunk) => wsServer.clients.forEach((wsClient) => wsClient.send(chunk.toString())));
+        syncProcess.stderr?.on('data', (chunk) => wsServer.clients.forEach((wsClient) => wsClient.send(chunk.toString())));
+    }
+    else {
+        syncProcess = child_process.fork('./dist/index.mjs', cmdArgs);
+        syncProcess.on('message', (msg) => wsServer.clients.forEach((wsClient) => wsClient.send(msg.toString())));
+    }
     syncProcess.on('close', () => {
         isSyncRunning = false;
         wsServer.clients.forEach((wsClient) => wsClient.send('~'));

@@ -10,6 +10,9 @@
   },
   "scripts": {
     "build": "tsc -p src/tsconfig.json",
+    "build:exe": "npm run build && bun build --compile --target=bun --windows-title \"Tally DB Connector\" --windows-description \"Tally DB Connector CLI\" --outfile=dist/tallydb.exe src/cli.mts",
+    "build:gui-exe": "npm run build && bun build --compile --target=bun --windows-title \"Tally DB Connector GUI\" --windows-description \"Tally DB Connector GUI\" --outfile=dist/tallydb-gui.exe src/server.mts",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-win.ps1",
     "start": "node ./dist/cli.mjs",
     "test": "npm run build"
   },

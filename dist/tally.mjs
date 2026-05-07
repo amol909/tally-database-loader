@@ -78,6 +78,34 @@ class _tally {
             throw err;
         }
     }
+    async validateIncrementalDatabaseSchema(lstTables) {
+        const missingAlterIdTables = [];
+        for (const table of lstTables.filter(p => p.nature == 'Primary')) {
+            const columns = (await database.listDatabaseTableColumns(table.name)).map(p => p.toLowerCase());
+            if (columns.length && !columns.includes('alterid')) {
+                missingAlterIdTables.push(table.name);
+            }
+        }
+        if (missingAlterIdTables.length) {
+            throw new Error([
+                'Incremental sync requires tables to be created from database-structure-incremental.sql.',
+                `Missing "alterid" column in: ${missingAlterIdTables.join(', ')}.`,
+                'Create a fresh database with the incremental schema, then run an initial sync before starting continuous sync.'
+            ].join(' '));
+        }
+    }
+    validateIncrementalDefinition(lstTables) {
+        const missingAlterIdTables = lstTables
+            .filter(p => p.nature == 'Primary')
+            .filter(p => !p.fields.some(field => field.name.toLowerCase() == 'alterid'))
+            .map(p => p.name);
+        if (missingAlterIdTables.length) {
+            throw new Error([
+                `Incremental sync requires an incremental export definition. Current definition "${this.config.definition}" is missing "alterid" in: ${missingAlterIdTables.join(', ')}.`,
+                'Set tally.definition to "tally-export-config-incremental.yaml".'
+            ].join(' '));
+        }
+    }
     importData() {
         return new Promise(async (resolve, reject) => {
             try {
@@ -90,6 +118,9 @@ class _tally {
                         this.lstTableMasterYaml = objYAML['master'];
                         this.lstTableTransactionYaml = objYAML['transaction'];
                         this.lstTableYaml = [...this.lstTableMasterYaml, ...this.lstTableTransactionYaml];
+                        if (this.config.sync == 'incremental') {
+                            this.validateIncrementalDefinition(this.lstTableYaml);
+                        }
                     }
                     else {
                         logger.logMessage('Tally export definition file specified does not exists or is invalid');
@@ -147,11 +178,12 @@ class _tally {
                                     countRequiredTablesFound++;
                                 }
                             }
-                            //run create table script only if none of the required tables are found
-                            if (countRequiredTablesFound == 0) {
+                            //run create table script if any required table is missing
+                            if (countRequiredTablesFound < lstRequiredTables.length) {
                                 logger.logMessage('Creating database tables [%s]', new Date().toLocaleDateString());
                                 await database.createDatabaseTables(this.config.sync);
                             }
+                            await this.validateIncrementalDatabaseSchema(lstTables);
                         }
                         //acquire last AlterID of master & transaction from last sync version of Database
                         logger.logMessage('Acquiring last AlterID from database');
@@ -410,8 +442,8 @@ class _tally {
                                 countRequiredTablesFound++;
                             }
                         }
-                        //run create table script only if none of the required tables are found
-                        if (countRequiredTablesFound == 0) {
+                        //run create table script if any required table is missing
+                        if (countRequiredTablesFound < lstRequiredTables.length) {
                             logger.logMessage('Creating database tables [%s]', new Date().toLocaleDateString());
                             await database.createDatabaseTables(this.config.sync);
                         }
@@ -597,7 +629,7 @@ class _tally {
                 let contentLastAlterIdTally = await this.postTallyXML(xmlPayLoad);
                 if (contentLastAlterIdTally == '') { //target company is closed
                     this.lastAlterIdMaster = -1;
-                    this.lastAlterIdTransaction - 1;
+                    this.lastAlterIdTransaction = -1;
                     if (!tally.config.company) {
                         logger.logMessage('No company open in Tally');
                         return reject('Please select one or more company in Tally to sync data');
@@ -623,7 +655,7 @@ class _tally {
             }
             catch (err) {
                 logger.logError('tally.importData()', err);
-                resolve();
+                reject(err);
             }
         });
     }

@@ -14,6 +14,8 @@ Utility supports 2 types of sync
 1. Carefully set name of the target company of Tally in *company* setting, as it is not advisable to keep company name blank which picks data from active company which could cause mess if it points to incorrect database
 1. Run the **run.bat** file
 
+If the database was previously created with the full-sync schema, incremental sync will fail with missing **alterid** columns. Do not manually add only those columns. Create a fresh database with the incremental schema, run one initial sync with **frequency** set to **0**, then set **frequency** to the desired background interval.
+
 ## Compatibility
 Incremental sync option is compatible only for RDBMS types of database i.e.
 1. SQL Server

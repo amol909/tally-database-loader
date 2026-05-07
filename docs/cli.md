@@ -12,6 +12,13 @@ tallydb setup
 tallydb sync
 tallydb test
 tallydb companies
+tallydb status
+tallydb check-changes
+tallydb service install
+tallydb service start
+tallydb service status
+tallydb service stop
+tallydb service uninstall
 tallydb config init
 tallydb config show
 tallydb config validate
@@ -26,7 +33,10 @@ Running `tallydb` without a command opens an interactive menu:
 ```text
 Run sync
 Setup / update config
+Set sync frequency
 Test connections
+Show sync status
+Check Tally changes
 List open Tally companies
 Show config
 Exit
@@ -96,6 +106,8 @@ Mode    continuous sync every 5 minute(s)
 
 If `tally.frequency` in `config.json` is `0`, sync runs once and exits. If it is greater than `0`, sync keeps running and checks Tally at that interval.
 
+The default starter config uses a 1 minute frequency.
+
 Runtime-only mode overrides:
 
 ```bat
@@ -150,6 +162,57 @@ tallydb companies
 
 This is useful before choosing a company in `config.json`.
 
+## Background Sync On Windows
+
+To run sync in the background after Windows starts, install the scheduled background task from the release folder:
+
+```bat
+tallydb service install
+tallydb service start
+```
+
+The task runs:
+
+```bat
+tallydb.exe service-run
+```
+
+`service-run` forces continuous sync with a 1 minute frequency unless you pass another frequency:
+
+```bat
+tallydb service-run --frequency 5
+```
+
+Check whether sync is alive and what it last did:
+
+```bat
+tallydb status
+tallydb service status
+```
+
+Status is written to `sync-status.json` beside `config.json`. Logs continue to be written to `import-log.txt` and `error-log.txt`.
+
+To verify whether the sync detector sees a Tally edit, run:
+
+```bat
+tallydb check-changes
+```
+
+This prints Tally's current master and voucher AlterIDs beside the last synced AlterIDs stored in the database `config` table. If those numbers do not change after an edit in Tally, Tally is not exposing that edit through the AlterID counters used by incremental sync.
+
+Stop or remove the background task:
+
+```bat
+tallydb service stop
+tallydb service uninstall
+```
+
+By default, `service install` creates a Windows startup task. If Tally is only available after user login, install it as a logon task instead:
+
+```bat
+tallydb service install --startup logon
+```
+
 ## Build And Run
 
 Compile TypeScript:
@@ -169,4 +232,3 @@ or:
 ```bat
 node ./dist/cli.mjs
 ```
-

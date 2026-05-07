@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import process from 'node:process';
+import child_process from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import { confirm, input, password, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { cloneConfig, configExists, defaultConfig, loadConfig, maskConfig, saveConfig, validateConfig } from './config.mjs';
+import { describeSyncStatus, readSyncStatus } from './status.mjs';
 const program = new Command();
+const SERVICE_TASK_NAME = 'TallyDBConnectorSync';
 function printTitle(title = 'Tally DB Connector') {
     console.log(chalk.bold.cyan(title));
 }
@@ -190,6 +195,121 @@ function runConfigValidate() {
     }
     process.exitCode = 1;
 }
+function runStatusCommand() {
+    printTitle('Sync Status');
+    for (const line of describeSyncStatus(readSyncStatus())) {
+        console.log(line);
+    }
+}
+async function runCheckChangesCommand() {
+    printTitle('Change Check');
+    const config = requireConfig();
+    const { inspectChangeState } = await import('./sync.mjs');
+    const state = await inspectChangeState(config);
+    printInfo('Tally', `${config.tally.server}:${config.tally.port}`);
+    printInfo('Company', config.tally.company || 'Current active company');
+    printInfo('Mode', config.tally.sync);
+    printInfo('Tally M', String(state.tallyMasterAlterId));
+    printInfo('Tally V', String(state.tallyTransactionAlterId));
+    if (state.databaseError) {
+        printFail(`Could not read database sync markers: ${state.databaseError}`);
+        return;
+    }
+    printInfo('DB M', String(state.databaseMasterAlterId ?? 0));
+    printInfo('DB V', String(state.databaseTransactionAlterId ?? 0));
+    if (state.missingIncrementalColumns?.length) {
+        printFail(`Incremental schema is incomplete. Missing "alterid" column in: ${state.missingIncrementalColumns.join(', ')}`);
+    }
+    if (state.masterChanged || state.transactionChanged) {
+        printOk(`Change detected: master=${state.masterChanged ? 'yes' : 'no'}, transaction=${state.transactionChanged ? 'yes' : 'no'}`);
+    }
+    else {
+        printFail('No AlterID change detected by Tally.');
+    }
+}
+function getServiceBatchPath() {
+    return path.join(process.cwd(), 'tallydb-service.bat');
+}
+function ensureServiceBatch() {
+    const batchPath = getServiceBatchPath();
+    const exePath = process.execPath.endsWith('node.exe') || process.execPath.endsWith('bun.exe')
+        ? path.join(process.cwd(), 'dist', 'cli.mjs')
+        : process.execPath;
+    const command = exePath.endsWith('.mjs')
+        ? `node "${exePath}" service-run`
+        : `"${exePath}" service-run`;
+    fs.writeFileSync(batchPath, `@echo off\r\ncd /d "%~dp0"\r\n${command}\r\n`, { encoding: 'ascii' });
+    return batchPath;
+}
+function runSchtasks(args) {
+    return child_process.execFileSync('schtasks.exe', args, { encoding: 'utf8' });
+}
+function runServiceInstall(startup) {
+    printTitle('Install Background Sync');
+    requireConfig();
+    const batchPath = ensureServiceBatch();
+    const schedule = startup == 'logon' ? 'ONLOGON' : 'ONSTART';
+    const args = [
+        '/Create',
+        '/TN', SERVICE_TASK_NAME,
+        '/TR', `"${batchPath}"`,
+        '/SC', schedule,
+        '/F'
+    ];
+    if (schedule == 'ONSTART') {
+        args.push('/RU', 'SYSTEM');
+    }
+    runSchtasks(args);
+    printOk(`Installed scheduled task "${SERVICE_TASK_NAME}" (${startup == 'logon' ? 'at user logon' : 'at computer startup'}).`);
+    printInfo('Runner', batchPath);
+    printInfo('Status', 'Use "tallydb status" or "tallydb service status".');
+}
+function runServiceStart() {
+    printTitle('Start Background Sync');
+    runSchtasks(['/Run', '/TN', SERVICE_TASK_NAME]);
+    printOk(`Started scheduled task "${SERVICE_TASK_NAME}".`);
+}
+function runServiceStop() {
+    printTitle('Stop Background Sync');
+    runSchtasks(['/End', '/TN', SERVICE_TASK_NAME]);
+    printOk(`Stopped scheduled task "${SERVICE_TASK_NAME}".`);
+}
+function runServiceUninstall() {
+    printTitle('Uninstall Background Sync');
+    runSchtasks(['/Delete', '/TN', SERVICE_TASK_NAME, '/F']);
+    printOk(`Removed scheduled task "${SERVICE_TASK_NAME}".`);
+}
+function runServiceStatus() {
+    printTitle('Background Sync Task');
+    try {
+        console.log(runSchtasks(['/Query', '/TN', SERVICE_TASK_NAME, '/V', '/FO', 'LIST']));
+    }
+    catch {
+        printFail(`Scheduled task "${SERVICE_TASK_NAME}" is not installed.`);
+    }
+    console.log('');
+    runStatusCommand();
+}
+async function runFrequencyCommand() {
+    printTitle('Sync Frequency');
+    const config = requireConfig();
+    printOk('Config valid');
+    printInfo('Current', config.tally.frequency > 0 ? `${config.tally.frequency} minute(s)` : 'one-time sync');
+    const frequency = parseInteger(await input({
+        message: 'Frequency in minutes (0 for one-time sync)',
+        default: String(config.tally.frequency),
+        validate: validateIntegerInput
+    }), config.tally.frequency);
+    config.tally.frequency = frequency;
+    const errors = validateConfig(config);
+    if (errors.length) {
+        for (const error of errors)
+            printFail(error);
+        throw new Error('Frequency update produced an invalid config.');
+    }
+    saveConfig(config);
+    printOk(`Saved frequency: ${frequency > 0 ? `every ${frequency} minute(s)` : 'one-time sync'}`);
+}
 async function promptForConfig() {
     const existing = configExists() ? loadConfig() : cloneConfig(defaultConfig);
     const config = cloneConfig(existing);
@@ -232,6 +352,12 @@ async function promptForConfig() {
             { name: 'Incremental', value: 'incremental' }
         ]
     });
+    if (config.tally.sync == 'incremental' && config.tally.definition == 'tally-export-config.yaml') {
+        config.tally.definition = 'tally-export-config-incremental.yaml';
+    }
+    else if (config.tally.sync == 'full' && config.tally.definition == 'tally-export-config-incremental.yaml') {
+        config.tally.definition = 'tally-export-config.yaml';
+    }
     config.database.technology = await select({
         message: 'Database technology',
         default: config.database.technology,
@@ -311,28 +437,47 @@ async function runSetupCommand() {
     }
 }
 async function runMainMenu() {
-    printTitle();
-    const action = await select({
-        message: 'What do you want to do?',
-        choices: [
-            { name: 'Run sync', value: 'sync' },
-            { name: 'Setup / update config', value: 'setup' },
-            { name: 'Test connections', value: 'test' },
-            { name: 'List open Tally companies', value: 'companies' },
-            { name: 'Show config', value: 'show' },
-            { name: 'Exit', value: 'exit' }
-        ]
-    });
-    if (action == 'sync')
-        await runSyncCommand({}, []);
-    else if (action == 'setup')
-        await runSetupCommand();
-    else if (action == 'test')
-        await runTestCommand();
-    else if (action == 'companies')
-        await runCompaniesCommand();
-    else if (action == 'show')
-        runConfigShow();
+    while (true) {
+        printTitle();
+        const action = await select({
+            message: 'What do you want to do?',
+            choices: [
+                { name: 'Run sync', value: 'sync' },
+                { name: 'Setup / update config', value: 'setup' },
+                { name: 'Set sync frequency', value: 'frequency' },
+                { name: 'Test connections', value: 'test' },
+                { name: 'Show sync status', value: 'status' },
+                { name: 'Check Tally changes', value: 'changes' },
+                { name: 'List open Tally companies', value: 'companies' },
+                { name: 'Show config', value: 'show' },
+                { name: 'Exit', value: 'exit' }
+            ]
+        });
+        if (action == 'exit')
+            return;
+        try {
+            if (action == 'sync')
+                await runSyncCommand({}, []);
+            else if (action == 'setup')
+                await runSetupCommand();
+            else if (action == 'frequency')
+                await runFrequencyCommand();
+            else if (action == 'test')
+                await runTestCommand();
+            else if (action == 'status')
+                runStatusCommand();
+            else if (action == 'changes')
+                await runCheckChangesCommand();
+            else if (action == 'companies')
+                await runCompaniesCommand();
+            else if (action == 'show')
+                runConfigShow();
+        }
+        catch (err) {
+            printFail(err?.message || String(err));
+        }
+        console.log('');
+    }
 }
 program
     .name('tallydb')
@@ -368,6 +513,39 @@ program.command('companies')
     .action(async () => {
     await runCompaniesCommand();
 });
+program.command('status')
+    .description('Show background sync heartbeat and last activity')
+    .action(runStatusCommand);
+program.command('check-changes')
+    .description('Compare current Tally AlterIDs with the last database sync markers')
+    .action(runCheckChangesCommand);
+program.command('service-run')
+    .description('Run continuous sync for Windows background task')
+    .option('--frequency <minutes>', 'background sync frequency in minutes', '1')
+    .action(async (options) => {
+    await runSyncCommand({ frequency: options.frequency || '1' }, []);
+});
+const serviceCommand = program.command('service')
+    .description('Install and manage Windows background sync task');
+serviceCommand.command('install')
+    .description('Install background sync to run when Windows starts')
+    .option('--startup <boot|logon>', 'start at computer boot or user logon', 'boot')
+    .action((options) => {
+    const startup = options.startup == 'logon' ? 'logon' : 'boot';
+    runServiceInstall(startup);
+});
+serviceCommand.command('start')
+    .description('Start the background sync task now')
+    .action(runServiceStart);
+serviceCommand.command('stop')
+    .description('Stop the background sync task')
+    .action(runServiceStop);
+serviceCommand.command('status')
+    .description('Show Windows task status and sync heartbeat')
+    .action(runServiceStatus);
+serviceCommand.command('uninstall')
+    .description('Remove the background sync task')
+    .action(runServiceUninstall);
 const configCommand = program.command('config')
     .description('Manage config.json');
 configCommand.command('init')

@@ -521,6 +521,41 @@ class _database {
         });
     }
 
+    listDatabaseTableColumns(targetTable: string): Promise<string[]> {
+        let retval: string[] = [];
+        return new Promise<string[]>(async (resolve, reject) => {
+            try {
+                if (this.config.technology == 'mssql') {
+                    let sqlQuery = `select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS where TABLE_CATALOG = '${this.config.schema}' and TABLE_NAME = '${targetTable}' order by ORDINAL_POSITION`;
+                    let result = await this.readMssql(sqlQuery);
+                    for (const row of result) {
+                        retval.push(row[0].value);
+                    }
+                }
+                else if (this.config.technology == 'mysql') {
+                    let sqlQuery = `select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS where TABLE_SCHEMA = '${this.config.schema}' and TABLE_NAME = '${targetTable}' order by ORDINAL_POSITION`;
+                    let result = await this.executeMysql(sqlQuery);
+                    for (const row of result.data) {
+                        retval.push(row['COLUMN_NAME']);
+                    }
+                }
+                else if (this.config.technology == 'postgres') {
+                    let sqlQuery = `select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS where TABLE_CATALOG = '${this.config.schema}' and TABLE_NAME = '${targetTable}' order by ORDINAL_POSITION`;
+                    let result = await this.executePostgres(sqlQuery);
+                    for (const row of result.data) {
+                        retval.push(row[0]);
+                    }
+                }
+                else;
+                resolve(retval);
+            }
+            catch (err) {
+                reject(err);
+                logger.logError('database.listDatabaseTableColumns()', err);
+            }
+        });
+    }
+
     createDatabaseTables(syncMode: string): Promise<void> {
         return new Promise<void>(async (resolve, reject) => {
             let scriptFileName = './database-structure.sql'
@@ -529,20 +564,36 @@ class _database {
 
             let sqlQuery = fs.readFileSync(scriptFileName, 'utf-8')
             try {
+                const lstExistingTables = await this.listDatabaseTables();
+                const lstCreateTableSQL = sqlQuery
+                    .split(/;\s*$/gm)
+                    .map(p => p.trim())
+                    .filter(p => p != '')
+                    .filter(p => {
+                        const matchTableName = /^create\s+table\s+([^\s(]+)/i.exec(p);
+                        return !matchTableName || !lstExistingTables.includes(matchTableName[1]);
+                    });
+
+                if (lstCreateTableSQL.length == 0) {
+                    return resolve();
+                }
+
                 if (this.config.technology == 'mssql') {
-                    await this.executeMssql(sqlQuery);
+                    await this.executeMssql(lstCreateTableSQL);
                 }
                 else if (this.config.technology == 'mysql') {
-                    sqlQuery = sqlQuery.replace(/nvarchar/gi, 'varchar'); //replace nvarchar with varchart for MySQL
-                    for (const tblSQL of sqlQuery.split(/;\s*$/gm)) {
-                        if (tblSQL.trim() != '')
-                            await this.executeMysql(tblSQL.trim());
+                    for (let tblSQL of lstCreateTableSQL) {
+                        tblSQL = tblSQL.replace(/nvarchar/gi, 'varchar'); //replace nvarchar with varchar for MySQL
+                        await this.executeMysql(tblSQL);
                     }
                 }
                 else if (this.config.technology == 'postgres') {
-                    sqlQuery = sqlQuery.replace(/nvarchar/gi, 'varchar'); //replace nvarchar with varchart for PostgreSQL
-                    sqlQuery = sqlQuery.replace(/tinyint/gi, 'smallint'); //replace tinyint with smallint for PostgreSQL
-                    await this.executePostgres(sqlQuery);
+                    let lstPostgresCreateTableSQL = lstCreateTableSQL.map(p => {
+                        p = p.replace(/nvarchar/gi, 'varchar'); //replace nvarchar with varchar for PostgreSQL
+                        p = p.replace(/tinyint/gi, 'smallint'); //replace tinyint with smallint for PostgreSQL
+                        return p;
+                    });
+                    await this.executePostgres(lstPostgresCreateTableSQL);
                 }
                 resolve();
             }

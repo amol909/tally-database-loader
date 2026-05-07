@@ -1,6 +1,7 @@
 import { appConfig, cloneConfig } from './config.mjs';
 import { database } from './database.mjs';
 import { logger } from './logger.mjs';
+import { createSyncStatus, syncStatus, updateSyncStatus, writeSyncStatus } from './status.mjs';
 import { tally } from './tally.mjs';
 
 export interface syncRunOptions {
@@ -10,9 +11,21 @@ export interface syncRunOptions {
     frequency?: number;
 }
 
+export interface changeInspection {
+    tallyMasterAlterId: number;
+    tallyTransactionAlterId: number;
+    databaseMasterAlterId?: number;
+    databaseTransactionAlterId?: number;
+    masterChanged?: boolean;
+    transactionChanged?: boolean;
+    missingIncrementalColumns?: string[];
+    databaseError?: string;
+}
+
 let isSyncRunning = false;
 let lastMasterAlterId = 0;
 let lastTransactionAlterId = 0;
+let activeStatus: syncStatus | undefined;
 
 export function applyRuntimeConfig(config: appConfig, overrides = new Map<string, string>()): appConfig {
     const runtimeConfig = cloneConfig(config);
@@ -32,14 +45,89 @@ export function getSyncModeLabel(frequency: number): string {
     return frequency > 0 ? `continuous sync every ${frequency} minute(s)` : 'one-time sync';
 }
 
+export async function inspectChangeState(config: appConfig): Promise<changeInspection> {
+    logger.setConsoleEnabled(false);
+    try {
+        applyRuntimeConfig(config);
+        await tally.updateLastAlterId();
+
+        const result: changeInspection = {
+            tallyMasterAlterId: tally.lastAlterIdMaster,
+            tallyTransactionAlterId: tally.lastAlterIdTransaction
+        };
+
+        try {
+            await database.openConnectionPool();
+            const integerType = database.config.technology == 'mysql' ? 'unsigned int' : 'int';
+            result.databaseMasterAlterId = await database.executeScalar<number>(`select coalesce(max(cast(value as ${integerType})),0) x from config where name = 'Last AlterID Master'`);
+            result.databaseTransactionAlterId = await database.executeScalar<number>(`select coalesce(max(cast(value as ${integerType})),0) x from config where name = 'Last AlterID Transaction'`);
+            result.masterChanged = result.tallyMasterAlterId != result.databaseMasterAlterId;
+            result.transactionChanged = result.tallyTransactionAlterId != result.databaseTransactionAlterId;
+            if (config.tally.sync == 'incremental') {
+                const yamlDefinition = await import('js-yaml');
+                const fs = await import('node:fs');
+                const rawDefinition = yamlDefinition.load(fs.readFileSync(config.tally.definition, 'utf8')) as any;
+                const primaryTables = [
+                    ...(rawDefinition?.master || []),
+                    ...(rawDefinition?.transaction || [])
+                ].filter((table: any) => table?.nature == 'Primary');
+                const definitionMissingAlterId = primaryTables
+                    .filter((table: any) => !table.fields?.some((field: any) => String(field.name).toLowerCase() == 'alterid'))
+                    .map((table: any) => table.name);
+                if (definitionMissingAlterId.length) {
+                    result.databaseError = `Incremental sync requires tally.definition to use an incremental export definition. Missing "alterid" in definition for: ${definitionMissingAlterId.join(', ')}. Set tally.definition to "tally-export-config-incremental.yaml".`;
+                    return result;
+                }
+                const missingColumns: string[] = [];
+                for (const tableName of primaryTables.map((table: any) => table.name)) {
+                    const columns = (await database.listDatabaseTableColumns(tableName)).map(p => p.toLowerCase());
+                    if (columns.length && !columns.includes('alterid')) {
+                        missingColumns.push(tableName);
+                    }
+                }
+                result.missingIncrementalColumns = missingColumns;
+            }
+        } catch (err: any) {
+            result.databaseError = err?.message || String(err);
+        } finally {
+            await database.closeConnectionPool();
+        }
+
+        return result;
+    } finally {
+        logger.setConsoleEnabled(true);
+    }
+}
+
 async function invokeImport(): Promise<void> {
     try {
         isSyncRunning = true;
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                state: 'importing',
+                lastImportStartedAt: new Date().toISOString(),
+                message: 'Import is running.'
+            });
+        }
         await tally.importData();
         logger.logMessage('Import completed successfully [%s]', new Date().toLocaleString());
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                state: 'idle',
+                lastImportFinishedAt: new Date().toISOString(),
+                message: 'Import completed successfully.'
+            });
+        }
     }
     catch (err) {
         logger.logMessage('Error in importing data\r\nPlease check error-log.txt file for detailed errors [%s]', new Date().toLocaleString());
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                state: 'error',
+                lastErrorAt: new Date().toISOString(),
+                message: err instanceof Error ? err.message : String(err)
+            });
+        }
         throw err;
     }
     finally {
@@ -65,16 +153,56 @@ export async function runSync(options: syncRunOptions): Promise<void> {
     }
 
     runtimeConfig.tally.frequency = tally.config.frequency;
+    activeStatus = createSyncStatus(tally.config.frequency);
+    writeSyncStatus(activeStatus);
+
+    const heartbeat = setInterval(() => {
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                message: activeStatus.message
+            });
+        }
+    }, 15000);
+
+    const markStopped = () => {
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                state: 'stopped',
+                message: 'Sync process stopped.'
+            });
+        }
+    };
+
+    process.once('SIGINT', () => {
+        markStopped();
+        process.exit(0);
+    });
+    process.once('SIGTERM', () => {
+        markStopped();
+        process.exit(0);
+    });
 
     if (tally.config.frequency <= 0) {
-        await invokeImport();
-        logger.closeStreams();
+        try {
+            await invokeImport();
+        } finally {
+            clearInterval(heartbeat);
+            markStopped();
+            logger.closeStreams();
+        }
         return;
     }
 
     const triggerImport = async () => {
         try {
             if (!isSyncRunning) {
+                if (activeStatus) {
+                    activeStatus = updateSyncStatus(activeStatus, {
+                        state: 'checking',
+                        lastCheckAt: new Date().toISOString(),
+                        message: 'Checking Tally for changes.'
+                    });
+                }
                 await tally.updateLastAlterId();
 
                 const isDataChanged = !(lastMasterAlterId == tally.lastAlterIdMaster && lastTransactionAlterId == tally.lastAlterIdTransaction);
@@ -85,20 +213,45 @@ export async function runSync(options: syncRunOptions): Promise<void> {
                 }
                 else {
                     logger.logMessage('No change in Tally data found [%s]', new Date().toLocaleString());
+                    if (activeStatus) {
+                        activeStatus = updateSyncStatus(activeStatus, {
+                            state: 'idle',
+                            message: 'No change in Tally data found.'
+                        });
+                    }
                 }
             }
         } catch (err) {
             if (typeof err == 'string' && err.endsWith('is closed in Tally')) {
                 logger.logMessage(err + ' [%s]', new Date().toLocaleString());
+                if (activeStatus) {
+                    activeStatus = updateSyncStatus(activeStatus, {
+                        state: 'idle',
+                        message: err
+                    });
+                }
             }
             else {
-                throw err;
+                logger.logMessage('Background sync check failed: %s [%s]', err instanceof Error ? err.message : String(err), new Date().toLocaleString());
+                if (activeStatus) {
+                    activeStatus = updateSyncStatus(activeStatus, {
+                        state: 'error',
+                        lastErrorAt: new Date().toISOString(),
+                        message: err instanceof Error ? err.message : String(err)
+                    });
+                }
             }
         }
     };
 
     if (!tally.config.company) {
         logger.logMessage('Continuous sync requires Tally company name to be specified in config.json');
+        if (activeStatus) {
+            activeStatus = updateSyncStatus(activeStatus, {
+                state: 'error',
+                message: 'Continuous sync requires Tally company name to be specified in config.json.'
+            });
+        }
     }
     else {
         setInterval(async () => await triggerImport(), tally.config.frequency * 60000);

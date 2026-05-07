@@ -19,7 +19,7 @@ export const defaultConfig = {
         todate: 'auto',
         sync: 'full',
         batchsize: 5000,
-        frequency: 0,
+        frequency: 1,
         company: ''
     }
 };

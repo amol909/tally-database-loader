@@ -4,8 +4,11 @@ csv/
 ssl/
 sync/
 dist/*.mjs.map
+release/
 import-log.txt
 error-log.txt
+sync-status.json
+tallydb-service.bat
 *.zip
 *.exe
 *.duckdb

@@ -189,7 +189,7 @@
             let tallyFromdate = document.getElementById('tally_period_auto').checked === true ? 'auto' : document.getElementById('tally_fromdate').value;
             let tallyTodate = document.getElementById('tally_period_auto').checked === true ? 'auto' : document.getElementById('tally_todate').value;
             let tallySync = document.getElementById('tally_sync').value;
-            let tallyFrequency = parseInt(document.getElementById('tally_sync').value);
+            let tallyFrequency = parseInt(document.getElementById('tally_frequency').value);
             let tallyCompany = document.getElementById('tally_company').value;
 
             objConfig = {
@@ -263,6 +263,9 @@
             }
             if (objConfig['tally']['port'] < 0 || objConfig['tally']['port'] > 65535) {
                 retval += 'Tally Port value is invalid\r\n';
+            }
+            if (objConfig['tally']['frequency'] < 0) {
+                retval += 'Frequency cannot be negative\r\n';
             }
             if (objConfig['tally']['fromdate'] != 'auto' && objConfig['tally']['todate'] != 'auto') {
                 if (isNaN(Date.parse(objConfig['tally']['fromdate']))) {
@@ -403,6 +406,11 @@
         }
 
         async function saveConfig() {
+            let msg = validateConfig();
+            if (msg) {
+                alert(msg);
+                return;
+            }
             let objConfig = prepareConfigObj();
             let resp = await fetch('http://localhost:8997/saveconfig', {
                 method: 'POST',
@@ -536,38 +544,44 @@
             </div>
         </header>
 
-        <section class="mb-6 rounded-lg border border-line bg-white/70 p-5">
-            <div class="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <h2 class="text-base font-semibold text-ink">Start Here</h2>
-                <span class="text-xs font-medium uppercase tracking-[0.16em] text-muted">Basic flow</span>
+        <details class="group mb-6 rounded-lg border border-line bg-white/70">
+            <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+                <span class="flex items-center gap-3 text-sm font-semibold text-ink">
+                    <span class="grid h-7 w-7 place-items-center rounded-full border border-line bg-white text-base text-sage">?</span>
+                    Quick start help
+                </span>
+                <span class="text-xs font-medium uppercase tracking-[0.16em] text-muted group-open:hidden">Open</span>
+                <span class="hidden text-xs font-medium uppercase tracking-[0.16em] text-muted group-open:inline">Close</span>
+            </summary>
+            <div class="border-t border-line px-4 pb-4 pt-3">
+                <ol class="grid gap-3 text-sm text-muted sm:grid-cols-2 lg:grid-cols-3">
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">1. Launch</span>
+                        Open this screen with <span class="font-semibold text-ink">run-gui.bat</span> and keep the command window running.
+                    </li>
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">2. Prepare</span>
+                        Create a blank destination database, then keep Tally Prime open with the target company loaded.
+                    </li>
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">3. Connect</span>
+                        In Tally, enable Client/Server connectivity as <span class="font-semibold text-ink">Both</span>, usually on port 9000.
+                    </li>
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">4. Configure</span>
+                        Fill database and Tally details, then use <span class="font-semibold text-ink">Check Tally Status</span> and reload the company list.
+                    </li>
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">5. Run</span>
+                        Choose full or incremental sync, set the period, and click <span class="font-semibold text-ink">Sync</span>.
+                    </li>
+                    <li class="rounded-lg bg-mist p-3">
+                        <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">6. Verify</span>
+                        Watch the live log below. Tables are created automatically; detailed failures go to error-log.txt.
+                    </li>
+                </ol>
             </div>
-            <ol class="grid gap-3 text-sm text-muted sm:grid-cols-2 lg:grid-cols-3">
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">1. Launch</span>
-                    Open this screen with <span class="font-semibold text-ink">run-gui.bat</span> and keep the command window running.
-                </li>
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">2. Prepare</span>
-                    Create a blank destination database, then keep Tally Prime open with the target company loaded.
-                </li>
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">3. Connect</span>
-                    In Tally, enable Client/Server connectivity as <span class="font-semibold text-ink">Both</span>, usually on port 9000.
-                </li>
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">4. Configure</span>
-                    Fill database and Tally details, then use <span class="font-semibold text-ink">Check Tally Status</span> and reload the company list.
-                </li>
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">5. Run</span>
-                    Choose full or incremental sync, set the period, and click <span class="font-semibold text-ink">Sync</span>.
-                </li>
-                <li class="rounded-lg bg-mist p-3">
-                    <span class="mb-1 block text-xs font-bold uppercase tracking-[0.14em] text-sage">6. Verify</span>
-                    Watch the live log below. Tables are created automatically; detailed failures go to error-log.txt.
-                </li>
-            </ol>
-        </section>
+        </details>
 
         <section class="grid gap-6 lg:grid-cols-2">
             <div id="pnlDatabase" class="rounded-lg border border-line bg-white/90 p-5 shadow-sm">

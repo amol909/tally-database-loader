@@ -27,7 +27,7 @@ export const defaultConfig: appConfig = {
         todate: 'auto',
         sync: 'full',
         batchsize: 5000,
-        frequency: 0,
+        frequency: 1,
         company: ''
     }
 };
@@ -113,4 +113,3 @@ export function validateConfig(config: appConfig): string[] {
 
     return errors;
 }
-
