@@ -8,6 +8,9 @@ import yaml from 'js-yaml';
 import { utility } from './utility.mjs';
 import { logger } from './logger.mjs';
 import { database } from './database.mjs';
+import { MetricsSink, PhaseTimer } from './metrics.mjs';
+import { HttpTallyTransport } from './tally-transport.mjs';
+import { YamlReportExporter, withAdditionalFilters, processTdlOutputManipulation } from './yaml-report-exporter.mjs';
 class _tally {
     config;
     lastAlterIdMaster = 0;
@@ -25,6 +28,8 @@ class _tally {
     truncateTable = true;
     periodFromDate = null;
     periodToDate = null;
+    metrics;
+    transport;
     constructor() {
         try {
             this.config = JSON.parse(fs.readFileSync('./config.json', 'utf8'))['tally'];
@@ -42,6 +47,8 @@ class _tally {
                 batchsize: 5000
             };
         }
+        this.metrics = new MetricsSink();
+        this.transport = new HttpTallyTransport(this.config);
     }
     updateCommandlineConfig(lstConfigs) {
         try {
@@ -65,6 +72,7 @@ class _tally {
                 this.config.frequency = parseInt(lstConfigs.get('tally-frequency') || '0');
             if (lstConfigs.has('tally-company'))
                 this.config.company = lstConfigs.get('tally-company') || '';
+            this.transport = new HttpTallyTransport(this.config);
             //flags
             if (lstConfigs.has('tally-master'))
                 this.importMaster = lstConfigs.get('tally-master') == 'true';
@@ -105,6 +113,29 @@ class _tally {
                 'Set tally.definition to "tally-export-config-incremental.yaml".'
             ].join(' '));
         }
+    }
+    async recordPhase(phase, action, table, collection) {
+        const timer = new PhaseTimer(this.metrics, {
+            phase,
+            table,
+            collection,
+            syncMode: this.config.sync,
+            dbTechnology: database.config.technology,
+            loadMethod: database.config.loadmethod
+        });
+        try {
+            const result = await action();
+            timer.end(true);
+            return result;
+        }
+        catch (err) {
+            timer.end(false, err);
+            throw err;
+        }
+    }
+    setTransportForTest(transport, metrics = this.metrics) {
+        this.transport = transport;
+        this.metrics = metrics;
     }
     importData() {
         return new Promise(async (resolve, reject) => {
@@ -191,14 +222,14 @@ class _tally {
                         let lastAlterIdTransactionDatabase = await database.executeScalar(`select coalesce(max(cast(value as ${database.config.technology == 'mysql' ? 'unsigned int' : 'int'})),0) x from config where name = 'Last AlterID Transaction'`);
                         //update active company information before starting import
                         logger.logMessage('Updating company information configuration table [%s]', new Date().toLocaleDateString());
-                        await this.saveCompanyInfo();
+                        await this.recordPhase('saveCompanyInfo', () => this.saveCompanyInfo(false));
                         //prepare substitution list of runtime values to reflected in TDL XML
                         let configTallyXML = new Map();
                         configTallyXML.set('fromDate', utility.Date.parse(this.config.fromdate, 'yyyy-MM-dd'));
                         configTallyXML.set('toDate', utility.Date.parse(this.config.todate, 'yyyy-MM-dd'));
                         configTallyXML.set('targetCompany', this.config.company ? utility.String.escapeHTML(this.config.company) : '##SVCurrentCompany');
                         logger.logMessage('Performing incremental sync [%s]', new Date().toLocaleString());
-                        await this.updateLastAlterId(); //Update last alter ID
+                        await this.recordPhase('updateLastAlterId', () => this.updateLastAlterId()); //Update last alter ID
                         let lastAlterIdMasterTally = this.lastAlterIdMaster;
                         let lastAlterIdTransactionTally = this.lastAlterIdTransaction;
                         //calculate flags to determine what changed
@@ -241,10 +272,10 @@ class _tally {
                                 filters: activeTable.filters
                             };
                             await this.processReport('_diff', tempTable, configTallyXML);
-                            await database.bulkLoad(path.join(process.cwd(), `./csv/_diff.data`), '_diff', tempTable.fields.map(p => p.type)); //upload to temporary table
+                            await this.recordPhase('diff_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/_diff.data`), '_diff', tempTable.fields.map(p => p.type)));
                             fs.unlinkSync(path.join(process.cwd(), `./csv/_diff.data`)); //delete temporary file
                             //insert into delete list rows there were deleted in current data compared to previous one
-                            await database.executeNonQuery(`insert into _delete select guid from ${activeTable.name} where guid not in (select guid from _diff);`);
+                            await this.recordPhase('delete_detection', () => database.executeNonQuery(`insert into _delete select guid from ${activeTable.name} where guid not in (select guid from _diff);`));
                             //insert into delete list rows that were modified in current data (as they will be imported freshly)
                             await database.executeNonQuery(`insert into _delete select t.guid from ${activeTable.name} as t join _diff as s on s.guid = t.guid where s.alterid <> t.alterid;`);
                             //remove delete list rows from the source table
@@ -262,13 +293,10 @@ class _tally {
                         if (flgIsMasterChanged) {
                             for (let i = 0; i < this.lstTableMasterYaml.length; i++) {
                                 let activeTable = this.lstTableMasterYaml[i];
-                                //add AlterID filter
-                                if (!Array.isArray(activeTable.filters))
-                                    activeTable.filters = [];
-                                activeTable.filters.push(`$AlterID > ${lastAlterIdMasterDatabase}`);
+                                activeTable = withAdditionalFilters(activeTable, [`$AlterID > ${lastAlterIdMasterDatabase}`]);
                                 let targetTable = activeTable.name;
                                 await this.processReport(targetTable, activeTable, configTallyXML);
-                                await database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type));
+                                await this.recordPhase('bulk_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
                                 fs.unlinkSync(path.join(process.cwd(), `./csv/${targetTable}.data`)); //delete raw file
                                 logger.logMessage('  syncing table %s', targetTable);
                             }
@@ -277,13 +305,10 @@ class _tally {
                         if (flgIsTransactionChanged) {
                             for (let i = 0; i < this.lstTableTransactionYaml.length; i++) {
                                 let activeTable = this.lstTableTransactionYaml[i];
-                                //add AlterID filter
-                                if (!Array.isArray(activeTable.filters))
-                                    activeTable.filters = [];
-                                activeTable.filters.push(`$AlterID > ${lastAlterIdTransactionDatabase}`);
+                                activeTable = withAdditionalFilters(activeTable, [`$AlterID > ${lastAlterIdTransactionDatabase}`]);
                                 let targetTable = activeTable.name;
                                 await this.processReport(targetTable, activeTable, configTallyXML);
-                                await database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type));
+                                await this.recordPhase('bulk_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
                                 fs.unlinkSync(path.join(process.cwd(), `./csv/${targetTable}.data`)); //delete raw file
                                 logger.logMessage('  syncing table %s', targetTable);
                             }
@@ -298,13 +323,13 @@ class _tally {
                                         let targetTable = activeTable.cascade_update[j].table;
                                         let targetField = activeTable.cascade_update[j].field;
                                         if (database.config.technology == 'mssql') {
-                                            await database.executeNonQuery(`update t set t.${targetField} = s.name from ${targetTable} as t join ${activeTable.name} as s on s.guid = t._${targetField} ;`);
+                                            await this.recordPhase('cascade_update', () => database.executeNonQuery(`update t set t.${targetField} = s.name from ${targetTable} as t join ${activeTable.name} as s on s.guid = t._${targetField} ;`), targetTable);
                                         }
                                         else if (database.config.technology == 'mysql') {
-                                            await database.executeNonQuery(`update ${targetTable} as t join ${activeTable.name} as s on s.guid = t._${targetField} set t.${targetField} = s.name ;`);
+                                            await this.recordPhase('cascade_update', () => database.executeNonQuery(`update ${targetTable} as t join ${activeTable.name} as s on s.guid = t._${targetField} set t.${targetField} = s.name ;`), targetTable);
                                         }
                                         else if (database.config.technology == 'postgres') {
-                                            await database.executeNonQuery(`update ${targetTable} as t set ${targetField} = s.name from ${activeTable.name} as s where s.guid = t._${targetField} ;`);
+                                            await this.recordPhase('cascade_update', () => database.executeNonQuery(`update ${targetTable} as t set ${targetField} = s.name from ${activeTable.name} as s where s.guid = t._${targetField} ;`), targetTable);
                                         }
                                         else
                                             ;
@@ -314,16 +339,13 @@ class _tally {
                         if (flgIsTransactionChanged) {
                             //check if any Voucher Type is set to auto numbering
                             //automatic voucher number shifts voucher numbers of all subsequent date vouchers on insertion of in-between vouchers which requires updation
-                            let countAutoNumberVouchers = await database.executeNonQuery(`select count(*) as c from mst_vouchertype where numbering_method like '%Auto%' ;`);
+                            let countAutoNumberVouchers = await database.executeScalar(`select count(*) as c from mst_vouchertype where numbering_method like '%Auto%' ;`);
                             if (countAutoNumberVouchers) {
                                 logger.logMessage('  processing voucher number updates');
                                 await database.executeNonQuery('truncate table _vchnumber;');
                                 //pull list of voucher numbers for all the vouchers
-                                let activeTable = this.lstTableTransactionYaml.filter(p => p.name = 'trn_voucher')[0];
-                                let lstActiveTableFilter = activeTable.filters || [];
-                                lstActiveTableFilter.push('$$IsEqual:($NumberingMethod:VoucherType:$VoucherTypeName):"Automatic"');
-                                if (Array.isArray(activeTable.filters))
-                                    activeTable.filters.splice(activeTable.filters.length - 1, 1); //remove AlterID filter
+                                let activeTable = this.lstTableTransactionYaml.filter(p => p.name == 'trn_voucher')[0];
+                                let lstActiveTableFilter = [...(activeTable.filters || []), '$$IsEqual:($NumberingMethod:VoucherType:$VoucherTypeName):"Automatic"'];
                                 let tempTable = {
                                     name: '',
                                     collection: activeTable.collection,
@@ -342,8 +364,8 @@ class _tally {
                                     nature: '',
                                     filters: lstActiveTableFilter
                                 };
-                                await this.processReport('_vchnumber', tempTable, configTallyXML);
-                                await database.bulkLoad(path.join(process.cwd(), `./csv/_vchnumber.data`), '_vchnumber', tempTable.fields.map(p => p.type)); //upload to temporary table
+                                await this.recordPhase('voucher_number_refresh', () => this.processReport('_vchnumber', tempTable, configTallyXML), '_vchnumber', tempTable.collection);
+                                await this.recordPhase('bulk_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/_vchnumber.data`), '_vchnumber', tempTable.fields.map(p => p.type)), '_vchnumber', tempTable.collection); //upload to temporary table
                                 fs.unlinkSync(path.join(process.cwd(), `./csv/_vchnumber.data`)); //delete temporary file
                                 //update voucher number with fresh copy
                                 if (database.config.technology == 'mssql') {
@@ -363,6 +385,7 @@ class _tally {
                         await database.executeNonQuery('truncate table _diff ;');
                         await database.executeNonQuery('truncate table _delete ;');
                         await database.executeNonQuery('truncate table _vchnumber ;');
+                        await this.recordPhase('saveCompanyInfo', () => this.saveCompanyInfo(true));
                     }
                     else
                         logger.logMessage('Incremental Sync is supported only for SQL Server / MySQL / PostgreSQL');
@@ -685,47 +708,7 @@ class _tally {
         });
     }
     postTallyXML(msg) {
-        return new Promise((resolve, reject) => {
-            try {
-                let req = http.request({
-                    hostname: this.config.server,
-                    port: this.config.port,
-                    path: '',
-                    method: 'POST',
-                    headers: {
-                        'Content-Length': Buffer.byteLength(msg, 'utf16le'),
-                        'Content-Type': 'text/xml;charset=utf-16'
-                    }
-                }, (res) => {
-                    let data = '';
-                    res
-                        .setEncoding('utf16le')
-                        .on('data', (chunk) => {
-                        let result = chunk.toString() || '';
-                        data += result;
-                    })
-                        .on('end', () => {
-                        resolve(data);
-                    })
-                        .on('error', (httpErr) => {
-                        logger.logMessage('Unable to connect with Tally. Ensure tally XML port is enabled');
-                        logger.logError('tally.postTallyXML()', httpErr['message'] || '');
-                        reject(httpErr);
-                    });
-                });
-                req.on('error', (reqError) => {
-                    logger.logMessage('Unable to connect with Tally. Ensure tally XML port is enabled');
-                    logger.logError('tally.postTallyXML()', reqError['message'] || '');
-                    reject(reqError);
-                });
-                req.write(msg, 'utf16le');
-                req.end();
-            }
-            catch (err) {
-                logger.logError('tally.postTallyXML()', err);
-                reject(err);
-            }
-        });
+        return this.transport.post(msg);
     }
     ;
     saveTallyXMLResponse(msg, filename) {
@@ -798,41 +781,17 @@ class _tally {
         return retval;
     }
     processTdlOutputManipulation(txt) {
-        let retval = txt;
-        try {
-            retval = retval.replace('<ENVELOPE>', ''); //Eliminate ENVELOPE TAG
-            retval = retval.replace('</ENVELOPE>', '');
-            retval = retval.replace(/\<FLDBLANK\>\<\/FLDBLANK\>/g, ''); //Eliminate blank tag
-            retval = retval.replace(/\s+\r\n/g, ''); //remove empty lines
-            retval = retval.replace(/\r\n/g, ''); //remove all line breaks
-            retval = retval.replace(/\t/g, ' '); //replace all tabs with a single space
-            retval = retval.replace(/\s+\<F/g, '<F'); //trim left space
-            retval = retval.replace(/\<\/F\d+\>/g, ''); //remove XML end tags
-            retval = retval.replace(/\<F01\>/g, '\r\n'); //append line break to each row start and remove first field XML start tag
-            retval = retval.replace(/\<F\d+\>/g, '\t'); //replace XML start tags with tab separator
-            retval = retval.replace(/&amp;/g, '&'); //escape ampersand
-            retval = retval.replace(/&lt;/g, '<'); //escape less than
-            retval = retval.replace(/&gt;/g, '>'); //escape greater than
-            retval = retval.replace(/&quot;/g, '"'); //escape ampersand
-            retval = retval.replace(/&apos;/g, "'"); //escape ampersand
-            retval = retval.replace(/&tab;/g, ''); //strip out tab if any
-            retval = retval.replace(/&#\d+;/g, ""); //remove all unreadable character escapes
-        }
-        catch (err) {
-            logger.logError('tally.processTdlOutputManipulation()', err);
-        }
-        return retval;
+        return processTdlOutputManipulation(txt);
     }
     processReport(targetTable, tableConfig, substitutions) {
         return new Promise(async (resolve, reject) => {
             try {
-                let xml = this.generateXMLfromYAML(tableConfig);
-                if (substitutions && substitutions.size)
-                    xml = this.substituteTDLParameters(xml, substitutions);
-                let output = await this.postTallyXML(xml);
-                output = this.processTdlOutputManipulation(output);
-                let columnHeaders = tableConfig.fields.map(p => p.name).join('\t');
-                fs.writeFileSync(`./csv/${targetTable}.data`, columnHeaders + output);
+                const exporter = new YamlReportExporter(this.transport, this.metrics, {
+                    syncMode: this.config.sync,
+                    dbTechnology: database.config.technology,
+                    loadMethod: database.config.loadmethod
+                });
+                await exporter.exportTable(targetTable, tableConfig, substitutions);
                 resolve();
             }
             catch (err) {
@@ -841,7 +800,7 @@ class _tally {
             }
         });
     }
-    saveCompanyInfo() {
+    saveCompanyInfo(writeAlterIdMarkers = true) {
         return new Promise(async (resolve, reject) => {
             try {
                 const convertDateYYYYMMDD = (dateStr) => {
@@ -865,10 +824,17 @@ class _tally {
                     }
                     let altIdMaster = parseInt(lstCompanyInfoParts[4]);
                     let altIdTransaction = parseInt(lstCompanyInfoParts[5]);
+                    if (!writeAlterIdMarkers) {
+                        return resolve();
+                    }
                     //clear config table of database and insert active company info to config table
                     if (/^(mssql|mysql|postgres)$/g.test(database.config.technology)) {
                         await database.executeNonQuery('truncate table config;');
-                        await database.executeNonQuery(`insert into config(name,value) values('Update Timestamp','${new Date().toLocaleString()}'),('Company Name','${companyName}'),('Period From','${this.config.fromdate}'),('Period To','${this.config.todate}'),('Last AlterID Master','${altIdMaster}'),('Last AlterID Transaction','${altIdTransaction}');`);
+                        let rows = `('Update Timestamp','${new Date().toLocaleString()}'),('Company Name','${companyName}'),('Period From','${this.config.fromdate}'),('Period To','${this.config.todate}')`;
+                        if (writeAlterIdMarkers) {
+                            rows += `,('Last AlterID Master','${altIdMaster}'),('Last AlterID Transaction','${altIdTransaction}')`;
+                        }
+                        await database.executeNonQuery(`insert into config(name,value) values${rows};`);
                     }
                     else if (/^(csv|bigquery)$/g.test(database.config.technology)) {
                         let csvContent = `name,value\r\nUpdate Timestamp,${new Date().toLocaleString().replace(',', '')}\r\nCompany Name,${companyName}\r\nPeriod From,${this.config.fromdate}\r\nPeriod To,${this.config.todate}\r\Last AlterID nMaster,${altIdMaster}\r\Last AlterID nTransaction,${altIdTransaction}`;
