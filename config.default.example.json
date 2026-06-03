@@ -1,0 +1,23 @@
+{
+    "database": {
+        "technology": "mssql",
+        "server": "localhost",
+        "port": 0,
+        "ssl": false,
+        "schema": "tallydb",
+        "username": "",
+        "password": "",
+        "loadmethod": "file"
+    },
+    "tally": {
+        "definition": "tally-export-config.yaml",
+        "server": "localhost",
+        "port": 9000,
+        "fromdate": "auto",
+        "todate": "auto",
+        "sync": "full",
+        "batchsize": 5000,
+        "frequency": 1,
+        "company": ""
+    }
+}

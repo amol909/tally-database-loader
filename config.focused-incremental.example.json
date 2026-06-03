@@ -1,0 +1,23 @@
+{
+    "database": {
+        "technology": "mssql",
+        "server": "localhost",
+        "port": 0,
+        "ssl": false,
+        "schema": "tallydb_focused_incremental",
+        "username": "",
+        "password": "",
+        "loadmethod": "file"
+    },
+    "tally": {
+        "definition": "tally-export-config-focused-incremental.yaml",
+        "server": "localhost",
+        "port": 9000,
+        "fromdate": "auto",
+        "todate": "auto",
+        "sync": "incremental",
+        "batchsize": 5000,
+        "frequency": 0,
+        "company": ""
+    }
+}
