@@ -143,7 +143,7 @@ class _tally {
         return new Promise<void>(async (resolve, reject) => {
             try {
 
-                logger.logMessage('Tally to Database | version: 1.0.42');
+                logger.logMessage('Tally to Database | version: 1.0.43');
 
                 let pathTallyExportDefinition = this.config.definition
                 if (pathTallyExportDefinition.endsWith('.yaml')) {

@@ -1,5 +1,10 @@
 ## Release History
 
+**Version: 1.0.43 [05-May-2026]**<br>
+
+Fixed:
+* In table **mst_godown** column **parent** was emiting values with Primary specified with un-readable text. Ideally this needs to be treat as blank, since it is belongs to root level in hierarchy. This issue was raised in [#58](https://github.com/dhananjay1405/tally-database-loader/issues/58) which is now fixed
+
 **Version: 1.0.42 [12-Apr-2026]**<br>
 
 Fixed:
