@@ -308,10 +308,10 @@ master:
         field: if $$IsEqual:$Parent:$$SysName:Primary then "" else $Guid:StockGroup:$Parent
         type: text
       - name: category
-        field: if $$IsEqual:$Category:$$SysName:NotApplicable then "" else $Category
+        field: if ($$IsEmpty:$Category or $$IsEqual:$Category:$$SysName:NotApplicable) then "" else $Category
         type: text
       - name: _category
-        field: if $$IsEqual:$Category:$$SysName:NotApplicable then "" else $Guid:StockCategory:$Parent
+        field: if ($$IsEmpty:$Category or $$IsEqual:$Category:$$SysName:NotApplicable) then "" else $Guid:StockCategory:$Category
         type: text
       - name: alias
         field: OnlyAlias
@@ -326,16 +326,16 @@ master:
         field: PartNo
         type: text
       - name: uom
-        field: if $$IsEqual:$BaseUnits:$$SysName:NotApplicable then "" else $BaseUnits
+        field: if ($$IsEmpty:$BaseUnits or $$IsEqual:$BaseUnits:$$SysName:NotApplicable) then "" else $BaseUnits
         type: text
       - name: _uom
-        field: $Guid:Unit:$BaseUnits
+        field: if ($$IsEmpty:$BaseUnits or $$IsEqual:$BaseUnits:$$SysName:NotApplicable) then "" else $Guid:Unit:$BaseUnits
         type: text
       - name: alternate_uom
-        field: if $$IsEqual:$AdditionalUnits:$$SysName:NotApplicable then "" else $AdditionalUnits
+        field: if ($$IsEmpty:$AdditionalUnits or $$IsEqual:$AdditionalUnits:$$SysName:NotApplicable) then "" else $AdditionalUnits
         type: text
       - name: _alternate_uom
-        field: $Guid:Unit:$AdditionalUnits
+        field: if ($$IsEmpty:$AdditionalUnits or $$IsEqual:$AdditionalUnits:$$SysName:NotApplicable) then "" else $Guid:Unit:$AdditionalUnits
         type: text
       - name: conversion
         field: Conversion
@@ -381,40 +381,6 @@ master:
         field: item
       - table: trn_batch
         field: item
-    cascade_delete:
-      - table: mst_opening_batch_allocation
-        field: _item
-  - name: mst_opening_batch_allocation
-    collection: StockItem.BatchAllocations
-    nature: Derived
-    fields:
-      - name: name
-        field: BatchName
-        type: text
-      - name: item
-        field: ..Name
-        type: text
-      - name: _item
-        field: $Guid:StockItem:$..Name
-        type: text
-      - name: opening_balance
-        field: OpeningBalance
-        type: quantity
-      - name: opening_rate
-        field: OpeningRate
-        type: rate
-      - name: opening_value
-        field: OpeningValue
-        type: amount
-      - name: godown
-        field: GodownName
-        type: text
-      - name: _godown
-        field: $Guid:Godown:$GodownName
-        type: text
-      - name: manufactured_on
-        field: MfdOn
-        type: date
 transaction:
   - name: trn_voucher
     collection: Voucher
@@ -424,6 +390,7 @@ transaction:
     filters:
       - NOT $IsCancelled
       - NOT $IsOptional
+      - ($$IsInventoryVch:$VoucherTypeName OR $VoucherTypeName = "Sales")
     fields:
       - name: guid
         field: Guid
@@ -473,161 +440,3 @@ transaction:
       - name: is_order_voucher
         field: if $$IsOrderVch:$VoucherTypeName then 1 else 0
         type: logical
-    cascade_delete:
-      - table: trn_accounting
-        field: guid
-      - table: trn_inventory
-        field: guid
-      - table: trn_bill
-        field: guid
-      - table: trn_batch
-        field: guid
-  - name: trn_accounting
-    collection: Voucher.AllLedgerEntries
-    nature: Derived
-    fetch:
-      - AllLedgerEntries
-    filters:
-      - NOT $IsCancelled
-      - NOT $IsOptional
-    fields:
-      - name: guid
-        field: Guid
-        type: text
-      - name: ledger
-        field: LedgerName
-        type: text
-      - name: _ledger
-        field: $Guid:Ledger:$LedgerName
-        type: text
-      - name: amount
-        field: Amount
-        type: amount
-      - name: amount_forex
-        field: >-
-          if $$IsEmpty:$$ForexValue:$Amount then 0 else $$StringFindAndReplace:(if $$IsDebit:$Amount then
-          -$$ForexValue:$Amount else $$ForexValue:$Amount):"(-)":"-"
-        type: amount
-      - name: currency
-        field: $$Currency:$Amount
-        type: text
-  - name: trn_inventory
-    collection: Voucher.AllInventoryEntries
-    nature: Derived
-    fetch:
-      - AllInventoryEntries
-    filters:
-      - NOT $IsCancelled
-      - NOT $IsOptional
-    fields:
-      - name: guid
-        field: Guid
-        type: text
-      - name: item
-        field: StockItemName
-        type: text
-      - name: _item
-        field: $Guid:StockItem:$StockItemName
-        type: text
-      - name: quantity
-        field: ActualQty
-        type: quantity
-      - name: rate
-        field: Rate
-        type: rate
-      - name: amount
-        field: Amount
-        type: amount
-      - name: additional_amount
-        field: AddlAmount
-        type: amount
-      - name: discount_amount
-        field: Discount
-        type: number
-      - name: godown
-        field: GodownName
-        type: text
-      - name: _godown
-        field: $Guid:Godown:$GodownName
-        type: text
-      - name: tracking_number
-        field: if ($$IsEmpty:$TrackingNumber or $$IsNotApplicable:$TrackingNumber) then "" else $TrackingNumber
-        type: text
-      - name: order_number
-        field: if ($$IsEmpty:$OrderNo or $$IsNotApplicable:$OrderNo) then "" else $OrderNo
-        type: text
-      - name: order_duedate
-        field: OrderDueDate
-        type: date
-  - name: trn_bill
-    collection: Voucher.AllLedgerEntries.BillAllocations
-    nature: Derived
-    fetch:
-      - AllLedgerEntries
-    filters:
-      - NOT $IsCancelled
-      - NOT $IsOptional
-    fields:
-      - name: guid
-        field: Guid
-        type: text
-      - name: ledger
-        field: LedgerName
-        type: text
-      - name: _ledger
-        field: $Guid:Ledger:$LedgerName
-        type: text
-      - name: name
-        field: Name
-        type: text
-      - name: amount
-        field: Amount
-        type: amount
-      - name: billtype
-        field: BillType
-        type: text
-      - name: bill_credit_period
-        field: $$Number:$BillCreditPeriod
-        type: number
-  - name: trn_batch
-    collection: Voucher.AllInventoryEntries.BatchAllocations
-    nature: Derived
-    fetch:
-      - AllInventoryEntries
-    filters:
-      - NOT $IsCancelled
-      - NOT $IsOptional
-    fields:
-      - name: guid
-        field: Guid
-        type: text
-      - name: item
-        field: StockItemName
-        type: text
-      - name: _item
-        field: if $$IsEmpty:$StockItemName then "" else $Guid:StockItem:$StockItemName
-        type: text
-      - name: name
-        field: BatchName
-        type: text
-      - name: quantity
-        field: ActualQty
-        type: quantity
-      - name: amount
-        field: Amount
-        type: amount
-      - name: godown
-        field: GodownName
-        type: text
-      - name: _godown
-        field: if $$IsEmpty:$GodownName then "" else $Guid:Godown:$GodownName
-        type: text
-      - name: destination_godown
-        field: DestinationGodownName
-        type: text
-      - name: _destination_godown
-        field: if $$IsEmpty:$DestinationGodownName then "" else $Guid:Godown:$DestinationGodownName
-        type: text
-      - name: tracking_number
-        field: if ($$IsEmpty:$TrackingNumber or $$IsNotApplicable:$TrackingNumber) then "" else $TrackingNumber
-        type: text

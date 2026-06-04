@@ -1,7 +1,7 @@
-import http from 'node:http';
-import fs from 'node:fs';
-import child_process from 'node:child_process';
-import path from 'node:path';
+import http from 'http';
+import fs from 'fs';
+import child_process from 'child_process';
+import path from 'path';
 import { WebSocketServer } from 'ws';
 import { connectionConfig, tallyConfig } from './definition.mjs';
 
@@ -78,6 +78,9 @@ function postTallyXML(tallyServer: string, tallyPort: number, payload: string): 
                 });
             req.on('error', (reqError) => {
                 reject(reqError);
+            });
+            req.setTimeout(7000, () => {
+                req.destroy(new Error('Tally request timed out'));
             });
             req.write(payload, 'utf16le');
             req.end();
@@ -172,9 +175,14 @@ const httpServer = http.createServer((req, res) => {
 });
 
 httpServer.listen(httpPort, 'localhost', () => {
-    console.log(`Server started on http://localhost:${httpPort}`);
+    const guiUrl = `http://localhost:${httpPort}`;
+    console.log(`Server started on ${guiUrl}`);
     console.log('Launching utility GUI page on default browser...');
-    child_process.exec(`start http://localhost:${httpPort}`);
+    child_process.exec(`cmd /c start "" "${guiUrl}"`, (err) => {
+        if (err) {
+            console.log(`Unable to launch browser automatically. Open ${guiUrl} manually.`);
+        }
+    });
     setInterval(() => { //set timer to detect if webpage is open/closed via monitoring websocket clients
         if(wsServer.clients.size == 0 && !isSyncRunning) {
             console.log('No webpage connected. Closing utility...');
@@ -182,5 +190,3 @@ httpServer.listen(httpPort, 'localhost', () => {
         }
     }, 5000);
 });
-
-

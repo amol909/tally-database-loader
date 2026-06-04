@@ -3,6 +3,7 @@ import { database } from './database.mjs';
 import { logger } from './logger.mjs';
 import { createSyncStatus, syncStatus, updateSyncStatus, writeSyncStatus } from './status.mjs';
 import { tally } from './tally.mjs';
+import { refreshGodownStockSummary } from './godown-stock-summary.mjs';
 
 export interface syncRunOptions {
     config: appConfig;
@@ -65,7 +66,7 @@ export async function inspectChangeState(config: appConfig): Promise<changeInspe
             result.transactionChanged = result.tallyTransactionAlterId != result.databaseTransactionAlterId;
             if (config.tally.sync == 'incremental') {
                 const yamlDefinition = await import('js-yaml');
-                const fs = await import('node:fs');
+                const fs = await import('fs');
                 const rawDefinition = yamlDefinition.load(fs.readFileSync(config.tally.definition, 'utf8')) as any;
                 const primaryTables = [
                     ...(rawDefinition?.master || []),
@@ -110,6 +111,7 @@ async function invokeImport(): Promise<void> {
             });
         }
         await tally.importData();
+        await refreshGodownStockSummary(tally.config);
         logger.logMessage('Import completed successfully [%s]', new Date().toLocaleString());
         if (activeStatus) {
             activeStatus = updateSyncStatus(activeStatus, {
@@ -193,7 +195,12 @@ export async function runSync(options: syncRunOptions): Promise<void> {
         return;
     }
 
+    let isCheckingForChanges = false;
     const triggerImport = async () => {
+        if (isCheckingForChanges) {
+            return;
+        }
+        isCheckingForChanges = true;
         try {
             if (!isSyncRunning) {
                 if (activeStatus) {
@@ -241,6 +248,8 @@ export async function runSync(options: syncRunOptions): Promise<void> {
                     });
                 }
             }
+        } finally {
+            isCheckingForChanges = false;
         }
     };
 
