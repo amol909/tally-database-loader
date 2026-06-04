@@ -324,9 +324,26 @@
             }
         }
 
+        const tallyDefinitionProfiles = {
+            'tally-export-config.yaml': 'full',
+            'tally-export-config.json': 'full',
+            'tally-export-config-incremental.yaml': 'incremental',
+            'tally-export-config-focused-incremental.yaml': 'incremental'
+        };
+
+        function tally_definition_onchange(e) {
+            let targetSync = tallyDefinitionProfiles[e.value] ?? 'full';
+            document.getElementById('tally_sync').value = targetSync;
+        }
+
         function tally_sync_onchange(e) {
-            let targetDefinitionFile = `tally-export-config${e.value == 'incremental' ? '-incremental' : ''}.yaml`;
-            document.getElementById('tally_definition').value = targetDefinitionFile;
+            let tallyDefinition = document.getElementById('tally_definition');
+            let currentSync = tallyDefinitionProfiles[tallyDefinition.value] ?? 'full';
+            if (currentSync !== e.value) {
+                tallyDefinition.value = e.value == 'incremental'
+                    ? 'tally-export-config-incremental.yaml'
+                    : 'tally-export-config.yaml';
+            }
         }
 
         function tally_period_onchange(e) {
@@ -412,15 +429,18 @@
                 return;
             }
             let objConfig = prepareConfigObj();
-            let resp = await fetch('http://localhost:8997/saveconfig', {
-                method: 'POST',
-                body: JSON.stringify(objConfig, null, 4),
-                mode: "no-cors",
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-            let respData = await resp.text();
+            try {
+                let resp = await fetch('/saveconfig', {
+                    method: 'POST',
+                    body: JSON.stringify(objConfig, null, 4),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                await resp.text();
+            } catch (err) {
+                alert('Unable to save config. Please check that the GUI server is still running.');
+            }
         }
 
         async function sync() {
@@ -432,15 +452,23 @@
             showhideTallyDatabasePanel(false);
             document.getElementById('txtConsole').innerHTML = ''; //clear console text
             let objConfig = prepareConfigObj();
-            let resp = await fetch('http://localhost:8997/sync', {
-                method: 'POST',
-                body: JSON.stringify(objConfig),
-                mode: "no-cors",
-                headers: {
-                    'Content-Type': 'application/json'
+            try {
+                let resp = await fetch('/sync', {
+                    method: 'POST',
+                    body: JSON.stringify(objConfig),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                let respData = await resp.text();
+                if (respData != 'Sync started') {
+                    showhideTallyDatabasePanel(true);
+                    alert(respData);
                 }
-            });
-            let respData = await resp.text();
+            } catch (err) {
+                showhideTallyDatabasePanel(true);
+                alert('Unable to start sync. Please check that the GUI server is still running.');
+            }
         }
 
         async function abort() {
@@ -469,48 +497,57 @@
 
         async function populateCompanyListSuggesation() {
             let objConfig = prepareConfigObj();
-            let resp = await fetch('http://localhost:8997/list-company', {
-                method: 'POST',
-                body: JSON.stringify({ server: objConfig['tally']['server'], port: objConfig['tally']['port'] }),
-                mode: "no-cors",
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-            let respData = await resp.text();
-            const xmlParser = new DOMParser();
-            const xmlDoc = xmlParser.parseFromString(respData, "application/xml");
-            document.getElementById('dl_tally_company').innerHTML = '';
-            xmlDoc.firstChild.childNodes.forEach(p => {
-                if (p.nodeName == 'ROW') {
-                    document.getElementById('dl_tally_company').innerHTML += `<option value="${p.textContent}"></option>`;
-                }
-            });
+            try {
+                let resp = await fetch('/list-company', {
+                    method: 'POST',
+                    body: JSON.stringify({ server: objConfig['tally']['server'], port: objConfig['tally']['port'] }),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                let respData = await resp.text();
+                const xmlParser = new DOMParser();
+                const xmlDoc = xmlParser.parseFromString(respData, "application/xml");
+                document.getElementById('dl_tally_company').innerHTML = '';
+                xmlDoc.firstChild.childNodes.forEach(p => {
+                    if (p.nodeName == 'ROW') {
+                        document.getElementById('dl_tally_company').innerHTML += `<option value="${p.textContent}"></option>`;
+                    }
+                });
+            } catch {
+                document.getElementById('dl_tally_company').innerHTML = '';
+            }
         }
 
         async function checkTallyStatus() {
             let retval = false;
             let objConfig = prepareConfigObj();
-            let resp = await fetch('http://localhost:8997/tally-status', {
-                method: 'POST',
-                body: JSON.stringify({ server: objConfig['tally']['server'], port: objConfig['tally']['port'] }),
-                mode: "no-cors"
-            });
-            let respData = await resp.text();
-            if (respData == '') {
+            try {
+                let resp = await fetch('/tally-status', {
+                    method: 'POST',
+                    body: JSON.stringify({ server: objConfig['tally']['server'], port: objConfig['tally']['port'] }),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                let respData = await resp.text();
+                if (respData == '') {
+                    alert('Unable to communicate with Tally Prime');
+                }
+                else if (respData.includes('TallyPrime Server is Running')) {
+                    alert('Tally is running');
+                    retval = true;
+                }
+                else {
+                    alert('Incompatible version of Tally found running.\r\nKindly use Tally Prime');
+                }
+            } catch {
                 alert('Unable to communicate with Tally Prime');
-            }
-            else if (respData.includes('TallyPrime Server is Running')) {
-                alert('Tally is running');
-                retval = true;
-            }
-            else {
-                alert('Incompatible version of Tally found running.\r\nKindly use Tally Prime');
             }
             return retval;
         }
 
-        const wsClient = new WebSocket('http://localhost:8998');
+        const wsClient = new WebSocket('ws://localhost:8998');
         wsClient.onmessage = updateConsole;
         wsClient.onclose = notifyWebsocketDisconnection;
         wsClient.onopen = notifyWebsocketConnection;
@@ -518,7 +555,7 @@
         document.onreadystatechange = async (e) => {
             if (document.readyState == "complete") {
                 assignCurrentFinancialYear();
-                populateCompanyListSuggesation();
+                await loadConfig();
             }
         }
     </script>
@@ -658,8 +695,13 @@
                 </div>
                 <div class="space-y-4">
                     <div>
-                        <label for="tally_definition" class="mb-1.5 block text-sm font-medium text-muted">Definition</label>
-                        <input type="text" class="control" id="tally_definition" value="tally-export-config.yaml">
+                        <label for="tally_definition" class="mb-1.5 block text-sm font-medium text-muted">Export Config</label>
+                        <select class="control" id="tally_definition" onchange="tally_definition_onchange(this)">
+                            <option value="tally-export-config.yaml" selected>Normal Full Sync</option>
+                            <option value="tally-export-config.json">Normal Full Sync (JSON)</option>
+                            <option value="tally-export-config-incremental.yaml">Normal Incremental Sync</option>
+                            <option value="tally-export-config-focused-incremental.yaml">Focused Incremental Sync</option>
+                        </select>
                     </div>
                     <div class="grid gap-4 sm:grid-cols-2">
                         <div>

@@ -1,9 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import process from 'node:process';
-import http from 'node:http';
-import readline from 'node:readline';
-import stream from 'node:stream';
+import fs from 'fs';
+import path from 'path';
+import process from 'process';
+import http from 'http';
+import readline from 'readline';
+import stream from 'stream';
 import yaml from 'js-yaml';
 import { utility } from './utility.mjs';
 import { logger } from './logger.mjs';
@@ -264,7 +264,7 @@ class _tally {
                                     {
                                         name: 'alterid',
                                         field: 'AlterId',
-                                        type: 'text'
+                                        type: 'number'
                                     }
                                 ],
                                 nature: '',
@@ -289,16 +289,38 @@ class _tally {
                                 }
                             }
                         }
-                        // iterate through all Master tables to extract modifed and added rows in Tally data
-                        if (flgIsMasterChanged) {
-                            for (let i = 0; i < this.lstTableMasterYaml.length; i++) {
-                                let activeTable = this.lstTableMasterYaml[i];
-                                activeTable = withAdditionalFilters(activeTable, [`$AlterID > ${lastAlterIdMasterDatabase}`]);
+                        let lstMasterTablesToSync = flgIsMasterChanged
+                            ? this.lstTableMasterYaml.map(table => ({ table, refreshAll: false }))
+                            : [];
+                        if (flgIsTransactionChanged) {
+                            const stockItemTable = this.lstTableMasterYaml.find(p => p.name == 'mst_stock_item');
+                            if (stockItemTable) {
+                                const existingStockItem = lstMasterTablesToSync.find(p => p.table.name == 'mst_stock_item');
+                                if (existingStockItem) {
+                                    existingStockItem.refreshAll = true;
+                                }
+                                else {
+                                    lstMasterTablesToSync.push({ table: stockItemTable, refreshAll: true });
+                                }
+                            }
+                        }
+                        // iterate through Master tables to extract modified and added rows in Tally data
+                        // Stock item balances are refreshed fully after inventory vouchers because Tally
+                        // does not always change the StockItem AlterID when only stock quantity changes.
+                        if (lstMasterTablesToSync.length) {
+                            for (let i = 0; i < lstMasterTablesToSync.length; i++) {
+                                const syncTarget = lstMasterTablesToSync[i];
+                                let activeTable = syncTarget.table;
+                                if (!syncTarget.refreshAll) {
+                                    activeTable = withAdditionalFilters(activeTable, [`$AlterID > ${lastAlterIdMasterDatabase}`]);
+                                }
                                 let targetTable = activeTable.name;
-                                await this.processReport(targetTable, activeTable, configTallyXML);
-                                await this.recordPhase('bulk_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
-                                fs.unlinkSync(path.join(process.cwd(), `./csv/${targetTable}.data`)); //delete raw file
+                                let targetCsvFile = path.join(process.cwd(), `./csv/${targetTable}.data`);
                                 logger.logMessage('  syncing table %s', targetTable);
+                                await this.processReport(targetTable, activeTable, configTallyXML);
+                                await this.recordPhase('delete_existing_guid_rows', () => database.deleteRowsMatchingCsvGuid(targetTable, targetCsvFile), targetTable, activeTable.collection);
+                                await this.recordPhase('bulk_load', () => database.bulkLoad(targetCsvFile, targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
+                                fs.unlinkSync(targetCsvFile); //delete raw file
                             }
                         }
                         // iterate through Transaction table to extract modifed and added rows in Tally data
@@ -307,10 +329,12 @@ class _tally {
                                 let activeTable = this.lstTableTransactionYaml[i];
                                 activeTable = withAdditionalFilters(activeTable, [`$AlterID > ${lastAlterIdTransactionDatabase}`]);
                                 let targetTable = activeTable.name;
-                                await this.processReport(targetTable, activeTable, configTallyXML);
-                                await this.recordPhase('bulk_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/${targetTable}.data`), targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
-                                fs.unlinkSync(path.join(process.cwd(), `./csv/${targetTable}.data`)); //delete raw file
+                                let targetCsvFile = path.join(process.cwd(), `./csv/${targetTable}.data`);
                                 logger.logMessage('  syncing table %s', targetTable);
+                                await this.processReport(targetTable, activeTable, configTallyXML);
+                                await this.recordPhase('delete_existing_guid_rows', () => database.deleteRowsMatchingCsvGuid(targetTable, targetCsvFile), targetTable, activeTable.collection);
+                                await this.recordPhase('bulk_load', () => database.bulkLoad(targetCsvFile, targetTable, activeTable.fields.map(p => p.type)), targetTable, activeTable.collection);
+                                fs.unlinkSync(targetCsvFile); //delete raw file
                             }
                         }
                         if (flgIsMasterChanged) {
@@ -739,6 +763,9 @@ class _tally {
                     logger.logMessage('Unable to connect with Tally. Ensure tally XML port is enabled');
                     logger.logError('tally.saveTallyXMLResponse()', reqError['message'] || '');
                     reject(reqError);
+                });
+                req.setTimeout(180000, () => {
+                    req.destroy(new Error('Tally request timed out'));
                 });
                 strResponse.on('finish', () => {
                     strResponse.close();

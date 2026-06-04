@@ -1,4 +1,4 @@
-import http from 'node:http';
+import http from 'http';
 import { tallyConfig } from './definition.mjs';
 import { logger } from './logger.mjs';
 
@@ -42,6 +42,9 @@ export class HttpTallyTransport implements TallyTransport {
                     logger.logMessage('Unable to connect with Tally. Ensure tally XML port is enabled');
                     logger.logError('tally.postTallyXML()', reqError['message'] || '');
                     reject(reqError);
+                });
+                req.setTimeout(180000, () => {
+                    req.destroy(new Error('Tally request timed out'));
                 });
                 req.write(msg, 'utf16le');
                 req.end();

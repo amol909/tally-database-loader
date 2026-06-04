@@ -1,5 +1,5 @@
-import fs from 'node:fs';
-import { pipeline } from 'node:stream/promises';
+import fs from 'fs';
+import { pipeline } from 'stream/promises';
 import mysql from 'mysql2/promise';
 import mssql from 'tedious';
 import postgres from 'pg';
@@ -187,7 +187,9 @@ class _database {
             for (let c = 0; c < lstValues.length; c++) {
                 let targetFieldType = lstFieldType[c];
                 let targetFieldValue = lstValues[c];
-                if (doubleQuote)
+                if (targetFieldType == 'date' && targetFieldValue == '')
+                    lstValues[c] = '';
+                else if (doubleQuote)
                     lstValues[c] = `"${targetFieldValue}"`;
                 else if (targetFieldType == 'text' || targetFieldType == 'date')
                     lstValues[c] = `"${targetFieldValue}"`;
@@ -483,6 +485,37 @@ class _database {
             catch (err) {
                 reject(err);
                 logger.logError('database.truncateTables()', err);
+            }
+        });
+    }
+    deleteRowsMatchingCsvGuid(targetTable, csvFile) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                if (!fs.existsSync(csvFile)) {
+                    return resolve(0);
+                }
+                const txtCSV = fs.readFileSync(csvFile, 'utf-8');
+                const lstLines = txtCSV.split(/\r\n|\n|\r/g).filter(p => p != '');
+                const fieldList = lstLines.shift() || '';
+                const lstFields = fieldList.split(/\t/g).map(p => p.trim().toLowerCase());
+                const guidIndex = lstFields.indexOf('guid');
+                if (guidIndex < 0 || lstLines.length == 0) {
+                    return resolve(0);
+                }
+                const lstGuid = [...new Set(lstLines
+                        .map(line => (line.split('\t')[guidIndex] || '').trim())
+                        .filter(p => p != ''))];
+                let rowCount = 0;
+                while (lstGuid.length) {
+                    const batch = lstGuid.splice(0, 1000);
+                    const quotedGuidList = batch.map(p => `'${p.replace(/'/g, '\'\'')}'`).join(',');
+                    rowCount += await this.executeNonQuery(`delete from ${targetTable} where guid in (${quotedGuidList});`);
+                }
+                resolve(rowCount);
+            }
+            catch (err) {
+                logger.logError(`database.deleteRowsMatchingCsvGuid(${targetTable})`, err);
+                reject(err);
             }
         });
     }

@@ -1,6 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import process from 'node:process';
+import fs from 'fs';
+import path from 'path';
+import process from 'process';
 import { utility } from './utility.mjs';
 import { PhaseTimer } from './metrics.mjs';
 export class YamlReportExporter {
@@ -100,9 +100,13 @@ export function generateXMLfromYAML(tblConfig) {
         let fieldXML = `<FIELD NAME="Fld${utility.Number.format(i + 1, '00')}">`;
         if (/^[a-zA-Z0-9_]+$/g.test(iField.field)) {
             if (iField.type == 'date')
-                fieldXML += `<SET>if $$IsEmpty:$${iField.field} then null else (($$YearOfDate:$${iField.field})*10000)+(($$MonthOfDate:$${iField.field})*100)+(($$DayOfDate:$${iField.field})*1)</SET>`;
+                fieldXML += `<SET>if $$IsEmpty:$${iField.field} then $$StrByCharCode:241 else (($$YearOfDate:$${iField.field})*10000)+(($$MonthOfDate:$${iField.field})*100)+(($$DayOfDate:$${iField.field})*1)</SET>`;
+            else if (iField.type == 'text')
+                fieldXML += `<SET>$${iField.field}</SET>`;
             else if (iField.type == 'logical')
                 fieldXML += `<SET>if $${iField.field} then 1 else 0</SET>`;
+            else if (iField.type == 'number')
+                fieldXML += `<SET>if $$IsEmpty:$${iField.field} then "0" else $$StringFindAndReplace:($$String:$${iField.field}):"(-)":"-"</SET>`;
             else if (iField.type == 'amount')
                 fieldXML += `<SET>$$StringFindAndReplace:(if $$IsDebit:$${iField.field} then -$$NumValue:$${iField.field} else $$NumValue:$${iField.field}):"(-)":"-"</SET>`;
             else if (iField.type == 'quantity')
@@ -163,13 +167,26 @@ async function writeDataFile(filePath, columnHeaders, transformed) {
     let bytes = 0;
     const write = (chunk) => new Promise((resolve, reject) => {
         bytes += Buffer.byteLength(chunk);
+        const cleanup = () => {
+            writeStream.off('drain', onDrain);
+            writeStream.off('error', onError);
+        };
+        const onDrain = () => {
+            cleanup();
+            resolve();
+        };
+        const onError = (err) => {
+            cleanup();
+            reject(err);
+        };
+        writeStream.once('error', onError);
         if (writeStream.write(chunk)) {
+            cleanup();
             resolve();
         }
         else {
-            writeStream.once('drain', resolve);
+            writeStream.once('drain', onDrain);
         }
-        writeStream.once('error', reject);
     });
     await write(columnHeaders);
     for (const row of transformed.split(/\r\n/g)) {

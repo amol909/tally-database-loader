@@ -8,6 +8,10 @@ release/
 import-log.txt
 error-log.txt
 sync-status.json
+config.json
+import-metrics.jsonl
+*.xml
+*.csv
 tallydb-service.bat
 *.zip
 *.exe
