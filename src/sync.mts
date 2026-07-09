@@ -4,7 +4,7 @@ import { logger } from './logger.mjs';
 import { createSyncStatus, syncStatus, updateSyncStatus, writeSyncStatus } from './status.mjs';
 import { tally } from './tally.mjs';
 import { refreshGodownStockSummary } from './godown-stock-summary.mjs';
-import { recordSyncRunPing } from './sync-run-ping.mjs';
+import { buildNoChangeSyncRunPing, recordSyncRunPing } from './sync-run-ping.mjs';
 import {
     buildVoucherInventoryIncrementalOptions,
     readLastTransactionAlterId,
@@ -251,7 +251,9 @@ export async function runSync(options: syncRunOptions): Promise<void> {
                     await invokeImport();
                 }
                 else {
+                    const checkedAt = new Date();
                     logger.logMessage('No change in Tally data found [%s]', new Date().toLocaleString());
+                    await recordSyncRunPing(buildNoChangeSyncRunPing(checkedAt, new Date()));
                     if (activeStatus) {
                         activeStatus = updateSyncStatus(activeStatus, {
                             state: 'idle',

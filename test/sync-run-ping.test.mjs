@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSyncRunPingDDL, buildSyncRunPingInsert } from '../dist/sync-run-ping.mjs';
+import { buildNoChangeSyncRunPing, buildSyncRunPingDDL, buildSyncRunPingInsert } from '../dist/sync-run-ping.mjs';
 
 test('sync run ping SQL creates one append-only status table', () => {
     const ddl = buildSyncRunPingDDL();
@@ -35,4 +35,18 @@ test('sync run ping insert stores status and timing fields', () => {
         'Import completed successfully.',
         null
     ]);
+});
+
+test('no-change sync ping records a successful zero-row check', () => {
+    const startedAt = new Date('2026-07-09T08:00:00.000Z');
+    const finishedAt = new Date('2026-07-09T08:00:01.000Z');
+
+    assert.deepEqual(buildNoChangeSyncRunPing(startedAt, finishedAt), {
+        operation: 'sync',
+        status: 'success',
+        startedAt,
+        finishedAt,
+        rowsImported: 0,
+        message: 'No change in Tally data found.'
+    });
 });

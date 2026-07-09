@@ -39,6 +39,16 @@ export function buildSyncRunPingInsert(run) {
         ]
     };
 }
+export function buildNoChangeSyncRunPing(startedAt, finishedAt = new Date()) {
+    return {
+        operation: 'sync',
+        status: 'success',
+        startedAt,
+        finishedAt,
+        rowsImported: 0,
+        message: 'No change in Tally data found.'
+    };
+}
 export async function recordSyncRunPing(run) {
     if (database.config.technology != 'postgres') {
         return;
