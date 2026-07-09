@@ -263,6 +263,18 @@ async function runCheckChangesCommand(): Promise<void> {
     }
 }
 
+async function runStockGodownCommand(): Promise<void> {
+    printTitle('Stock Godown Import');
+    const config = requireConfig();
+    summarizeConfig(config, 'stock godown custom TDL only');
+    console.log('');
+
+    const { runStockGodownImport } = await import('./sync.mjs');
+    const rows = await runStockGodownImport(config);
+    printOk(`stock_godown_summary imported ${rows} rows`);
+}
+
+
 function getServiceBatchPath(): string {
     return path.join(process.cwd(), 'tallydb-service.bat');
 }
@@ -578,6 +590,10 @@ program.command('status')
 program.command('check-changes')
     .description('Compare current Tally AlterIDs with the last database sync markers')
     .action(runCheckChangesCommand);
+
+program.command('stock-godown')
+    .description('Import only custom TDL godown stock data into stock_godown_summary')
+    .action(runStockGodownCommand);
 
 program.command('service-run')
     .description('Run continuous sync for Windows background task')

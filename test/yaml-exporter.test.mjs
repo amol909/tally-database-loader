@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import { YamlReportExporter, processTdlOutputManipulation, withAdditionalFilters } from '../dist/yaml-report-exporter.mjs';
 import { MetricsSink } from '../dist/metrics.mjs';
 import { FakeTallyTransport } from '../dist/tally-transport.mjs';
@@ -81,4 +82,30 @@ test('failed transport rethrows and records failure metrics', async () => {
         process.chdir(cwd);
         fs.rmSync(tmp, { recursive: true, force: true });
     }
+});
+
+test('focused incremental export includes voucher inventory lines required for reconciliation', () => {
+    const definition = yaml.load(fs.readFileSync('tally-export-config-focused-incremental.yaml', 'utf8'));
+    const inventoryTable = definition.transaction.find(table => table.name == 'trn_inventory');
+
+    assert.ok(inventoryTable, 'trn_inventory must be exported for Frappe voucher reconciliation');
+    assert.equal(inventoryTable.collection, 'Voucher.AllInventoryEntries');
+    assert.deepEqual(
+        inventoryTable.fields.map(field => field.name),
+        [
+            'guid',
+            'item',
+            '_item',
+            'quantity',
+            'rate',
+            'amount',
+            'additional_amount',
+            'discount_amount',
+            'godown',
+            '_godown',
+            'tracking_number',
+            'order_number',
+            'order_duedate'
+        ]
+    );
 });

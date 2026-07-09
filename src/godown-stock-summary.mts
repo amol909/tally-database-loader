@@ -3,13 +3,19 @@ import { logger } from './logger.mjs';
 import { tallyConfig } from './definition.mjs';
 import { HttpTallyTransport } from './tally-transport.mjs';
 
-interface godownStockRow {
+export interface godownStockRow {
     item: string;
     godown: string;
     closingQty: string | null;
     uom: string;
     closingRate: string | null;
     closingValue: string | null;
+}
+
+export interface godownStockDetailRow extends godownStockRow {
+    rowType: string;
+    stockGroup: string;
+    batchName: string;
 }
 
 function escapeXml(value: string): string {
@@ -53,7 +59,7 @@ function ident(value: string): string {
     return `"${String(value).replace(/"/g, '""')}"`;
 }
 
-function buildStockSummaryRequest(config: tallyConfig): string {
+export function buildStockSummaryRequest(config: tallyConfig): string {
     const companyXml = config.company
         ? `<SVCURRENTCOMPANY>${escapeXml(config.company)}</SVCURRENTCOMPANY>`
         : '';
@@ -79,7 +85,69 @@ function buildStockSummaryRequest(config: tallyConfig): string {
 </ENVELOPE>`;
 }
 
-function parseStockSummaryRows(xml: string): godownStockRow[] {
+export function buildGodownSummaryRequest(config: tallyConfig): string {
+    const companyXml = config.company
+        ? `<SVCURRENTCOMPANY>${escapeXml(config.company)}</SVCURRENTCOMPANY>`
+        : '';
+
+    return `<?xml version="1.0" encoding="utf-8"?>
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>Godown Summary</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        ${companyXml}
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+}
+
+export function buildGodownStockSnapshotRequest(config: tallyConfig): string {
+    const companyXml = config.company
+        ? `<SVCURRENTCOMPANY>${escapeXml(config.company)}</SVCURRENTCOMPANY>`
+        : '';
+
+    return `<?xml version="1.0" encoding="utf-8"?>
+<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Data</TYPE>
+    <ID>DB Godown Stock Snapshot</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        ${companyXml}
+      </STATICVARIABLES>
+    </DESC>
+  </BODY>
+</ENVELOPE>`;
+}
+
+function readStockInfoRow(item: string, godown: string, stockInfo: string): godownStockRow {
+    const { qty, uom } = parseQuantity(textBetween(stockInfo, 'DSPCLQTY'));
+    return {
+        item,
+        godown,
+        closingQty: qty,
+        uom,
+        closingRate: parseNumeric(textBetween(stockInfo, 'DSPCLRATE')),
+        closingValue: parseNumeric(textBetween(stockInfo, 'DSPCLAMTA'))
+    };
+}
+
+export function parseStockSummaryRows(xml: string): godownStockRow[] {
     const tokens = [...xml.matchAll(/<DSPACCNAME>[\s\S]*?<\/DSPACCNAME>|<SSBATCHNAME>[\s\S]*?<\/SSBATCHNAME>|<DSPSTKINFO>[\s\S]*?<\/DSPSTKINFO>/gi)]
         .map(match => match[0]);
     const rows: godownStockRow[] = [];
@@ -95,6 +163,14 @@ function parseStockSummaryRows(xml: string): godownStockRow[] {
 
         if (/^<SSBATCHNAME>/i.test(token)) {
             pendingGodown = textBetween(token, 'SSGODOWN');
+            for (const stockInfo of token.matchAll(/<DSPSTKINFO>[\s\S]*?<\/DSPSTKINFO>/gi)) {
+                if (currentItem && pendingGodown) {
+                    rows.push(readStockInfoRow(currentItem, pendingGodown, stockInfo[0]));
+                }
+            }
+            if (/<DSPSTKINFO>/i.test(token)) {
+                pendingGodown = '';
+            }
             continue;
         }
 
@@ -102,32 +178,71 @@ function parseStockSummaryRows(xml: string): godownStockRow[] {
             continue;
         }
 
-        const { qty, uom } = parseQuantity(textBetween(token, 'DSPCLQTY'));
-        rows.push({
-            item: currentItem,
-            godown: pendingGodown,
-            closingQty: qty,
-            uom,
-            closingRate: parseNumeric(textBetween(token, 'DSPCLRATE')),
-            closingValue: parseNumeric(textBetween(token, 'DSPCLAMTA'))
-        });
+        rows.push(readStockInfoRow(currentItem, pendingGodown, token));
         pendingGodown = '';
     }
 
     return rows;
 }
 
-export async function refreshGodownStockSummary(config: tallyConfig): Promise<number> {
-    if (database.config.technology != 'postgres') {
-        logger.logMessage('Skipping godown stock summary refresh for %s database', database.config.technology);
-        return 0;
+export function parseGodownSummaryRows(xml: string, godownNames: string[]): godownStockRow[] {
+    const knownGodowns = new Set(godownNames.map(name => name.trim()).filter(Boolean));
+    const blocks = [...xml.matchAll(/<DSPACCNAME>[\s\S]*?<\/DSPSTKINFO>/gi)]
+        .map(match => match[0]);
+    const rows: godownStockRow[] = [];
+    let currentGodown = '';
+
+    for (const block of blocks) {
+        const name = textBetween(block, 'DSPDISPNAME');
+        if (knownGodowns.has(name)) {
+            currentGodown = name;
+            continue;
+        }
+        if (!currentGodown || !name) {
+            continue;
+        }
+
+        rows.push(readStockInfoRow(name, currentGodown, block));
     }
 
-    logger.logMessage('Refreshing godown stock summary [%s]', new Date().toLocaleString());
+    return rows;
+}
 
-    const transport = new HttpTallyTransport(config);
-    const xml = await transport.post(buildStockSummaryRequest(config));
-    const rows = parseStockSummaryRows(xml);
+export function parseGodownStockSnapshotRows(xml: string): godownStockDetailRow[] {
+    const blocks = [...xml.matchAll(/<rowType>[\s\S]*?(?=<rowType>|<\/ENVELOPE>)/gi)]
+        .map(match => match[0]);
+    const rows: godownStockDetailRow[] = [];
+
+    for (const block of blocks) {
+        const rowType = textBetween(block, 'rowType');
+        if (rowType != 'GODOWN') {
+            continue;
+        }
+
+        const item = textBetween(block, 'stockItem');
+        const godown = textBetween(block, 'godown');
+        const { qty, uom } = parseQuantity(textBetween(block, 'closingQty'));
+        if (!item || !godown || !qty || Number(qty) == 0) {
+            continue;
+        }
+
+        rows.push({
+            rowType,
+            stockGroup: textBetween(block, 'stockGroup'),
+            item,
+            batchName: textBetween(block, 'batchName'),
+            godown,
+            closingQty: qty,
+            uom: textBetween(block, 'uom') || uom,
+            closingRate: parseNumeric(textBetween(block, 'closingRate')),
+            closingValue: parseNumeric(textBetween(block, 'closingValue'))
+        });
+    }
+
+    return rows;
+}
+
+export async function replaceGodownStockSummaryRows(rows: godownStockDetailRow[]): Promise<number> {
     const qualifiedTable = `${ident('public')}.${ident('stock_godown_summary')}`;
 
     await database.openConnectionPool();
@@ -141,8 +256,14 @@ export async function refreshGodownStockSummary(config: tallyConfig): Promise<nu
             uom text null,
             closing_rate numeric null,
             closing_value numeric null,
+            stock_group text null,
+            batch_name text null,
+            row_type text not null default 'GODOWN',
             imported_at timestamptz not null default now()
         )`);
+        await client.query(`alter table ${qualifiedTable} add column if not exists stock_group text null`);
+        await client.query(`alter table ${qualifiedTable} add column if not exists batch_name text null`);
+        await client.query(`alter table ${qualifiedTable} add column if not exists row_type text not null default 'GODOWN'`);
         await client.query(`truncate table ${qualifiedTable}`);
 
         const batchSize = 500;
@@ -150,18 +271,17 @@ export async function refreshGodownStockSummary(config: tallyConfig): Promise<nu
             const batch = rows.slice(index, index + batchSize);
             const params: (string | null)[] = [];
             const values = batch.map((row, rowIndex) => {
-                const offset = rowIndex * 6;
-                params.push(row.item, row.godown, row.closingQty, row.uom, row.closingRate, row.closingValue);
-                return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6})`;
+                const offset = rowIndex * 9;
+                params.push(row.item, row.godown, row.closingQty, row.uom, row.closingRate, row.closingValue, row.stockGroup, row.batchName, row.rowType);
+                return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9})`;
             }).join(',');
             await client.query(
-                `insert into ${qualifiedTable} (item, godown, closing_qty, uom, closing_rate, closing_value) values ${values}`,
+                `insert into ${qualifiedTable} (item, godown, closing_qty, uom, closing_rate, closing_value, stock_group, batch_name, row_type) values ${values}`,
                 params
             );
         }
 
         await client.query('commit');
-        logger.logMessage('  stock_godown_summary: imported %d rows', rows.length);
         return rows.length;
     } catch (err) {
         await client.query('rollback');
@@ -170,4 +290,20 @@ export async function refreshGodownStockSummary(config: tallyConfig): Promise<nu
         client.release();
         await database.closeConnectionPool();
     }
+}
+
+export async function refreshGodownStockSummary(config: tallyConfig): Promise<number> {
+    if (database.config.technology != 'postgres') {
+        logger.logMessage('Skipping godown stock summary refresh for %s database', database.config.technology);
+        return 0;
+    }
+
+    logger.logMessage('Refreshing godown stock summary [%s]', new Date().toLocaleString());
+
+    const transport = new HttpTallyTransport(config);
+    const xml = await transport.post(buildGodownStockSnapshotRequest(config));
+    const rows = parseGodownStockSnapshotRows(xml);
+    const rowCount = await replaceGodownStockSummaryRows(rows);
+    logger.logMessage('  stock_godown_summary: imported %d rows', rowCount);
+    return rowCount;
 }

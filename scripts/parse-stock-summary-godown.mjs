@@ -44,6 +44,18 @@ const rows = [];
 let currentItem = '';
 let pendingGodown = '';
 
+function readStockInfoRow(item, godown, stockInfo) {
+    const { qty, uom } = parseQuantity(textBetween(stockInfo, 'DSPCLQTY'));
+    return {
+        item,
+        godown,
+        closing_qty: qty,
+        uom,
+        closing_rate: parseAmount(textBetween(stockInfo, 'DSPCLRATE')),
+        closing_value: parseAmount(textBetween(stockInfo, 'DSPCLAMTA'))
+    };
+}
+
 for (const token of tokens) {
     if (/^<DSPACCNAME>/i.test(token)) {
         currentItem = textBetween(token, 'DSPDISPNAME');
@@ -53,6 +65,14 @@ for (const token of tokens) {
 
     if (/^<SSBATCHNAME>/i.test(token)) {
         pendingGodown = textBetween(token, 'SSGODOWN');
+        for (const stockInfo of token.matchAll(/<DSPSTKINFO>[\s\S]*?<\/DSPSTKINFO>/gi)) {
+            if (currentItem && pendingGodown) {
+                rows.push(readStockInfoRow(currentItem, pendingGodown, stockInfo[0]));
+            }
+        }
+        if (/<DSPSTKINFO>/i.test(token)) {
+            pendingGodown = '';
+        }
         continue;
     }
 
@@ -65,15 +85,7 @@ for (const token of tokens) {
         continue;
     }
 
-    const { qty, uom } = parseQuantity(textBetween(token, 'DSPCLQTY'));
-    rows.push({
-        item: currentItem,
-        godown: pendingGodown,
-        closing_qty: qty,
-        uom,
-        closing_rate: parseAmount(textBetween(token, 'DSPCLRATE')),
-        closing_value: parseAmount(textBetween(token, 'DSPCLAMTA'))
-    });
+    rows.push(readStockInfoRow(currentItem, pendingGodown, token));
     pendingGodown = '';
 }
 

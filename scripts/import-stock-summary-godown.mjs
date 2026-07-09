@@ -38,6 +38,18 @@ function ident(value) {
     return `"${String(value).replace(/"/g, '""')}"`;
 }
 
+function readStockInfoRow(item, godown, stockInfo) {
+    const { qty, uom } = parseQuantity(textBetween(stockInfo, 'DSPCLQTY'));
+    return [
+        item,
+        godown,
+        qty,
+        uom,
+        parseNumeric(textBetween(stockInfo, 'DSPCLRATE')),
+        parseNumeric(textBetween(stockInfo, 'DSPCLAMTA'))
+    ];
+}
+
 function parseRows(xml) {
     const tokens = [...xml.matchAll(/<DSPACCNAME>[\s\S]*?<\/DSPACCNAME>|<SSBATCHNAME>[\s\S]*?<\/SSBATCHNAME>|<DSPSTKINFO>[\s\S]*?<\/DSPSTKINFO>/gi)]
         .map(match => match[0]);
@@ -54,6 +66,14 @@ function parseRows(xml) {
 
         if (/^<SSBATCHNAME>/i.test(token)) {
             pendingGodown = textBetween(token, 'SSGODOWN');
+            for (const stockInfo of token.matchAll(/<DSPSTKINFO>[\s\S]*?<\/DSPSTKINFO>/gi)) {
+                if (currentItem && pendingGodown) {
+                    rows.push(readStockInfoRow(currentItem, pendingGodown, stockInfo[0]));
+                }
+            }
+            if (/<DSPSTKINFO>/i.test(token)) {
+                pendingGodown = '';
+            }
             continue;
         }
 
@@ -61,15 +81,7 @@ function parseRows(xml) {
             continue;
         }
 
-        const { qty, uom } = parseQuantity(textBetween(token, 'DSPCLQTY'));
-        rows.push([
-            currentItem,
-            pendingGodown,
-            qty,
-            uom,
-            parseNumeric(textBetween(token, 'DSPCLRATE')),
-            parseNumeric(textBetween(token, 'DSPCLAMTA'))
-        ]);
+        rows.push(readStockInfoRow(currentItem, pendingGodown, token));
         pendingGodown = '';
     }
 

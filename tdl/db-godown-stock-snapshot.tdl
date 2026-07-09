@@ -1,0 +1,135 @@
+;; DB Godown Stock Snapshot
+;; Load this file in TallyPrime using F1: Help > TDL & Add-on > F4: Manage Local TDLs.
+;; API report ID: DB Godown Stock Snapshot
+
+[#Menu: Gateway of Tally]
+    Add : Key Item : Before : @@locQuit : DB Godown Stock Snapshot : D : Display : DB Godown Stock Snapshot
+
+[Report: DB Godown Stock Snapshot]
+    Title               : "DB Godown Stock Snapshot"
+    Form                : DBGSSForm
+    Keep XML Case       : Yes
+    Export Empty Fields : Yes
+
+[Form: DBGSSForm]
+    Button : ExportButton
+    Part   : DBGSSBody
+    Width  : 100% Page
+    Height : 100% Page
+
+[Part: DBGSSBody]
+    Line   : DBGSSHeaderLine, DBGSSStockItemLine
+    Repeat : DBGSSStockItemLine : DBGSSStockItems
+    Scroll : Both
+
+[Line: DBGSSHeaderLine]
+    Invisible   : $$InExportMode
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
+    Local       : Field : DBGSSRowType      : Set As : "Row Type"
+    Local       : Field : DBGSSStockGroup   : Set As : "Stock Group"
+    Local       : Field : DBGSSStockItemName: Set As : "Stock Item"
+    Local       : Field : DBGSSBatchName    : Set As : "Batch/Particular"
+    Local       : Field : DBGSSGodownName   : Set As : "Godown"
+    Local       : Field : DBGSSClosingQty   : Set As : "Closing Qty"
+    Local       : Field : DBGSSUOM          : Set As : "UOM"
+    Local       : Field : DBGSSClosingRate  : Set As : "Closing Rate"
+    Local       : Field : DBGSSClosingValue : Set As : "Closing Value"
+
+[Line: DBGSSStockItemLine]
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
+    Explode     : DBGSSBatchPart
+
+[Part: DBGSSBatchPart]
+    Line   : DBGSSBatchLine
+    Repeat : DBGSSBatchLine : DBGSSBatchRows
+
+[Line: DBGSSBatchLine]
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
+    Empty       : $$IsEmpty:$GodownName
+    Local       : Field : DBGSSRowType       : Set As : "GODOWN"
+    Local       : Field : DBGSSStockGroup    : Set As : $$ExplodeOwner:#DBGSSStockGroup
+    Local       : Field : DBGSSStockItemName : Set As : $$ExplodeOwner:#DBGSSStockItemName
+    Local       : Field : DBGSSBatchName     : Set As : If $$IsEmpty:$Name Then $BatchName Else $Name
+    Local       : Field : DBGSSGodownName    : Set As : $GodownName
+    Local       : Field : DBGSSClosingQty    : Set As : If $$IsEmpty:$StkClBalance Then $ClosingBalance Else $StkClBalance
+    Local       : Field : DBGSSUOM           : Set As : $$ExplodeOwner:#DBGSSUOM
+    Local       : Field : DBGSSClosingRate   : Set As : $ClosingRate
+    Local       : Field : DBGSSClosingValue  : Set As : If $$IsEmpty:$ClosingValue Then $TBalClosing Else $ClosingValue
+
+[Field: DBGSSRowType]
+    Use    : Name Field
+    Set As : "ITEM"
+    Width  : 10
+    XMLTag : "rowType"
+
+[Field: DBGSSStockGroup]
+    Use    : Name Field
+    Set As : $Parent
+    Width  : 24
+    XMLTag : "stockGroup"
+
+[Field: DBGSSStockItemName]
+    Use    : Name Field
+    Set As : $Name
+    Width  : 40
+    XMLTag : "stockItem"
+
+[Field: DBGSSBatchName]
+    Use    : Name Field
+    Set As : ""
+    Width  : 30
+    XMLTag : "batchName"
+
+[Field: DBGSSGodownName]
+    Use    : Name Field
+    Set As : ""
+    Width  : 24
+    XMLTag : "godown"
+
+[Field: DBGSSClosingQty]
+    Use    : Simple Field
+    Set As : $ClosingBalance
+    Width  : 18
+    XMLTag : "closingQty"
+
+[Field: DBGSSUOM]
+    Use    : Name Field
+    Set As : $BaseUnits
+    Width  : 10
+    XMLTag : "uom"
+
+[Field: DBGSSClosingRate]
+    Use    : Rate Price Field
+    Set As : $ClosingRate
+    Width  : 18
+    XMLTag : "closingRate"
+
+[Field: DBGSSClosingValue]
+    Use    : Amount Field
+    Set As : $ClosingValue
+    Width  : 18
+    XMLTag : "closingValue"
+
+[Collection: DBGSSStockItems]
+    Type       : Stock Item
+    Belongs To : Yes
+    Fetch      : Name, Parent, Category, BaseUnits
+    Fetch      : ClosingBalance, ClosingRate, ClosingValue
+    Sort       : @@Default : $Name
+
+[Collection: DBGSSBatchRows]
+    Type   : Batch
+    Child Of : #DBGSSStockItemName
+    Fetch  : Name, BatchName, GodownName, StockItemName
+    Fetch  : OpeningBalance, OpeningRate, OpeningValue
+    Fetch  : ClosingBalance, ClosingRate, ClosingValue
+    Fetch  : StkClBalance, TBalClosing, TBalOpening
+    Fetch  : TBalCredits, TBalDebits, StkInQty, StkOutQty
+    Sort   : @@Default : $GodownName, $Name
+    Filter : DBGSSHasGodown
+
+[System: Formula]
+    DBGSSHasGodown : NOT $$IsEmpty:$GodownName
