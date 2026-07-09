@@ -8,6 +8,7 @@ import { confirm, input, password, select } from '@inquirer/prompts';
 import chalk from 'chalk';
 import { cloneConfig, configExists, defaultConfig, loadConfig, maskConfig, saveConfig, validateConfig } from './config.mjs';
 import { describeSyncStatus, readSyncStatus } from './status.mjs';
+import { resolveVoucherInventoryUpdateMarker } from './voucher-inventory-lines.mjs';
 const program = new Command();
 const SERVICE_TASK_NAME = 'TallyDBConnectorSync';
 function printTitle(title = 'Tally DB Connector') {
@@ -235,6 +236,25 @@ async function runStockGodownCommand() {
     const { runStockGodownImport } = await import('./sync.mjs');
     const rows = await runStockGodownImport(config);
     printOk(`stock_godown_summary imported ${rows} rows`);
+}
+async function runVoucherInventoryCommand(options) {
+    printTitle('Voucher Inventory Import');
+    const config = requireConfig();
+    summarizeConfig(config, 'voucher inventory custom TDL only');
+    console.log('');
+    const fromAlterId = options.fromAlterId !== undefined ? parseInteger(options.fromAlterId, -1) : undefined;
+    const toAlterId = options.toAlterId !== undefined ? parseInteger(options.toAlterId, -1) : undefined;
+    if (fromAlterId !== undefined && fromAlterId < 0)
+        throw new Error('--from-alter-id must be a non-negative integer.');
+    if (toAlterId !== undefined && toAlterId < 0)
+        throw new Error('--to-alter-id must be a non-negative integer.');
+    const { runVoucherInventoryImport } = await import('./sync.mjs');
+    const rows = await runVoucherInventoryImport(config, {
+        fromAlterId,
+        toAlterId,
+        updateMarker: resolveVoucherInventoryUpdateMarker(options)
+    });
+    printOk(`trn_inventory imported ${rows} rows`);
 }
 function getServiceBatchPath() {
     return path.join(process.cwd(), 'tallydb-service.bat');
@@ -531,6 +551,12 @@ program.command('check-changes')
 program.command('stock-godown')
     .description('Import only custom TDL godown stock data into stock_godown_summary')
     .action(runStockGodownCommand);
+program.command('voucher-inventory')
+    .description('Import only custom TDL voucher inventory lines into trn_inventory')
+    .option('--from-alter-id <number>', 'override starting voucher AlterID')
+    .option('--to-alter-id <number>', 'optional ending voucher AlterID')
+    .option('--no-update-marker', 'do not update Last Voucher Inventory AlterID marker')
+    .action(runVoucherInventoryCommand);
 program.command('service-run')
     .description('Run continuous sync for Windows background task')
     .option('--frequency <minutes>', 'background sync frequency in minutes', '1')

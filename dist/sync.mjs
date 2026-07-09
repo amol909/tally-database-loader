@@ -5,6 +5,7 @@ import { createSyncStatus, updateSyncStatus, writeSyncStatus } from './status.mj
 import { tally } from './tally.mjs';
 import { refreshGodownStockSummary } from './godown-stock-summary.mjs';
 import { recordSyncRunPing } from './sync-run-ping.mjs';
+import { buildVoucherInventoryIncrementalOptions, readLastTransactionAlterId, readVoucherInventoryStartAlterId, refreshVoucherInventoryLines } from './voucher-inventory-lines.mjs';
 let isSyncRunning = false;
 let lastMasterAlterId = 0;
 let lastTransactionAlterId = 0;
@@ -80,6 +81,7 @@ async function invokeImport() {
     const runStartedAt = new Date();
     try {
         isSyncRunning = true;
+        const voucherInventoryStartAlterId = await readVoucherInventoryStartAlterId();
         if (activeStatus) {
             activeStatus = updateSyncStatus(activeStatus, {
                 state: 'importing',
@@ -88,14 +90,17 @@ async function invokeImport() {
             });
         }
         await tally.importData();
+        const voucherInventoryEndAlterId = await readLastTransactionAlterId();
+        const voucherRows = await refreshVoucherInventoryLines(tally.config, buildVoucherInventoryIncrementalOptions(voucherInventoryStartAlterId, voucherInventoryEndAlterId));
         const stockRows = await refreshGodownStockSummary(tally.config);
+        const customRows = stockRows + voucherRows;
         await recordSyncRunPing({
             operation: 'sync',
             status: 'success',
             startedAt: runStartedAt,
             finishedAt: new Date(),
-            rowsImported: stockRows,
-            message: 'Import completed successfully.'
+            rowsImported: customRows,
+            message: `Import completed successfully. stock_godown_summary=${stockRows}, trn_inventory=${voucherRows}.`
         });
         logger.logMessage('Import completed successfully [%s]', new Date().toLocaleString());
         if (activeStatus) {
@@ -275,6 +280,33 @@ export async function runStockGodownImport(config, overrides = new Map()) {
             startedAt,
             finishedAt: new Date(),
             message: 'Custom TDL stock import failed.',
+            errorMessage: err instanceof Error ? err.message : String(err)
+        });
+        throw err;
+    }
+}
+export async function runVoucherInventoryImport(config, options = {}, overrides = new Map()) {
+    const startedAt = new Date();
+    applyRuntimeConfig(config, overrides);
+    try {
+        const rows = await refreshVoucherInventoryLines(tally.config, options);
+        await recordSyncRunPing({
+            operation: 'voucher_inventory_custom_tdl',
+            status: 'success',
+            startedAt,
+            finishedAt: new Date(),
+            rowsImported: rows,
+            message: 'Imported trn_inventory from DB Voucher Inventory Lines custom TDL.'
+        });
+        return rows;
+    }
+    catch (err) {
+        await recordSyncRunPing({
+            operation: 'voucher_inventory_custom_tdl',
+            status: 'failure',
+            startedAt,
+            finishedAt: new Date(),
+            message: 'Custom TDL voucher inventory import failed.',
             errorMessage: err instanceof Error ? err.message : String(err)
         });
         throw err;

@@ -7,4 +7,6 @@ test('CLI exposes stock-only godown import command', () => {
 
     assert.match(help, /stock-godown/);
     assert.match(help, /custom TDL godown stock data/);
+    assert.match(help, /voucher-inventory/);
+    assert.match(help, /custom TDL voucher inventory lines/);
 });

@@ -11,6 +11,7 @@ sync-status.json
 config.json
 import-metrics.jsonl
 *.xml
+!tdl/*.xml
 *.csv
 tallydb-service.bat
 *.zip

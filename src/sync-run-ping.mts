@@ -1,5 +1,6 @@
 import { database } from './database.mjs';
 import { logger } from './logger.mjs';
+import type { PoolClient } from 'pg';
 
 export interface syncRunPing {
     operation: string;
@@ -57,18 +58,27 @@ export async function recordSyncRunPing(run: syncRunPing): Promise<void> {
         return;
     }
 
+    let client: PoolClient | null = null;
+    let shouldClosePool = false;
     try {
+        shouldClosePool = true;
         await database.openConnectionPool();
-        const client = await database.connectionPoolPostgres.connect();
-        try {
-            await client.query(buildSyncRunPingDDL());
-            const insert = buildSyncRunPingInsert(run);
-            await client.query(insert.sql, insert.params);
-        } finally {
-            client.release();
-            await database.closeConnectionPool();
-        }
+        client = await database.connectionPoolPostgres.connect();
+        await client.query(buildSyncRunPingDDL());
+        const insert = buildSyncRunPingInsert(run);
+        await client.query(insert.sql, insert.params);
     } catch (err) {
         logger.logError('recordSyncRunPing()', err);
+    } finally {
+        if (client) {
+            client.release();
+        }
+        if (shouldClosePool) {
+            try {
+                await database.closeConnectionPool();
+            } catch (err) {
+                logger.logError('recordSyncRunPing.closeConnectionPool()', err);
+            }
+        }
     }
 }

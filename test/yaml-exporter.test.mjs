@@ -84,28 +84,9 @@ test('failed transport rethrows and records failure metrics', async () => {
     }
 });
 
-test('focused incremental export includes voucher inventory lines required for reconciliation', () => {
+test('focused incremental export leaves voucher inventory lines to the custom TDL importer', () => {
     const definition = yaml.load(fs.readFileSync('tally-export-config-focused-incremental.yaml', 'utf8'));
     const inventoryTable = definition.transaction.find(table => table.name == 'trn_inventory');
 
-    assert.ok(inventoryTable, 'trn_inventory must be exported for Frappe voucher reconciliation');
-    assert.equal(inventoryTable.collection, 'Voucher.AllInventoryEntries');
-    assert.deepEqual(
-        inventoryTable.fields.map(field => field.name),
-        [
-            'guid',
-            'item',
-            '_item',
-            'quantity',
-            'rate',
-            'amount',
-            'additional_amount',
-            'discount_amount',
-            'godown',
-            '_godown',
-            'tracking_number',
-            'order_number',
-            'order_duedate'
-        ]
-    );
+    assert.equal(inventoryTable, undefined, 'generic focused sync must not export trn_inventory because it can crash Tally');
 });

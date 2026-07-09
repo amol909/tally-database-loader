@@ -1,0 +1,166 @@
+;; DB Voucher Inventory Lines
+;; Load this file in TallyPrime using F1: Help > TDL & Add-on > F4: Manage Local TDLs.
+;; API report ID: DB Voucher Inventory Lines
+
+[#Menu: Gateway of Tally]
+    Add : Key Item : Before : @@locQuit : DB Voucher Inventory Lines : V : Display : DB Voucher Inventory Lines
+
+[Variable: DBVILFromAlterID]
+    Type    : Number
+    Default : 0
+
+[Variable: DBVILToAlterID]
+    Type    : Number
+    Default : 0
+
+[System: Variable]
+    DBVILFromAlterID : 0
+    DBVILToAlterID   : 0
+
+[Report: DB Voucher Inventory Lines]
+    Title               : "DB Voucher Inventory Lines"
+    Form                : DBVILForm
+    Keep XML Case       : Yes
+    Export Empty Fields : Yes
+    Variable            : DBVILFromAlterID, DBVILToAlterID
+
+[Form: DBVILForm]
+    Button : ExportButton
+    Part   : DBVILBody
+    Width  : 100% Page
+    Height : 100% Page
+
+[Part: DBVILBody]
+    Line   : DBVILVoucherLine
+    Repeat : DBVILVoucherLine : DBVILVouchers
+    Scroll : Both
+
+[Line: DBVILVoucherLine]
+    Field   : DBVILRowType, DBVILGuid, DBVILAlterID, DBVILItem, DBVILItemGuid, DBVILQuantity, DBVILRate, DBVILAmount
+    Field   : DBVILAdditionalAmount, DBVILDiscountAmount, DBVILGodown, DBVILGodownGuid, DBVILTrackingNumber, DBVILOrderNumber, DBVILOrderDueDate
+    Explode : DBVILInventoryPart
+    Local   : Field : DBVILRowType : Set As : "VOUCHER"
+    Local   : Field : DBVILGuid    : Set As : $Guid
+    Local   : Field : DBVILAlterID : Set As : $AlterID
+
+[Part: DBVILInventoryPart]
+    Line   : DBVILInventoryLine
+    Repeat : DBVILInventoryLine : AllInventoryEntries
+
+[Line: DBVILInventoryLine]
+    Field : DBVILRowType, DBVILGuid, DBVILAlterID, DBVILItem, DBVILItemGuid, DBVILQuantity, DBVILRate, DBVILAmount
+    Field : DBVILAdditionalAmount, DBVILDiscountAmount, DBVILGodown, DBVILGodownGuid, DBVILTrackingNumber, DBVILOrderNumber, DBVILOrderDueDate
+    Local : Field : DBVILRowType          : Set As : "INVENTORY"
+    Local : Field : DBVILGuid             : Set As : $$ExplodeOwner:#DBVILGuid
+    Local : Field : DBVILAlterID          : Set As : $$ExplodeOwner:#DBVILAlterID
+    Local : Field : DBVILItem             : Set As : $StockItemName
+    Local : Field : DBVILItemGuid         : Set As : If $$IsEmpty:$StockItemName Then "" Else $Guid:StockItem:$StockItemName
+    Local : Field : DBVILQuantity         : Set As : $$StringFindAndReplace:(If $$IsInwards:$ActualQty Then $$Number:$$String:$ActualQty:"TailUnits" Else -$$Number:$$String:$ActualQty:"TailUnits"):"(-)":"-"
+    Local : Field : DBVILRate             : Set As : If $$IsEmpty:$Rate Then "" Else $$Number:$Rate
+    Local : Field : DBVILAmount           : Set As : $$StringFindAndReplace:(If $$IsDebit:$Amount Then -$$NumValue:$Amount Else $$NumValue:$Amount):"(-)":"-"
+    Local : Field : DBVILAdditionalAmount : Set As : If $$IsEmpty:$AddlAmount Then "" Else $$StringFindAndReplace:($$String:$AddlAmount):"(-)":"-"
+    Local : Field : DBVILDiscountAmount   : Set As : If $$IsEmpty:$Discount Then "" Else $$StringFindAndReplace:($$String:$Discount):"(-)":"-"
+    Local : Field : DBVILGodown           : Set As : $GodownName
+    Local : Field : DBVILGodownGuid       : Set As : If $$IsEmpty:$GodownName Then "" Else $Guid:Godown:$GodownName
+    Local : Field : DBVILTrackingNumber   : Set As : If ($$IsEmpty:$TrackingNumber OR $$IsNotApplicable:$TrackingNumber) Then "" Else $TrackingNumber
+    Local : Field : DBVILOrderNumber      : Set As : If ($$IsEmpty:$OrderNo OR $$IsNotApplicable:$OrderNo) Then "" Else $OrderNo
+    Local : Field : DBVILOrderDueDate     : Set As : If $$IsEmpty:$OrderDueDate Then "" Else (($$YearOfDate:$OrderDueDate) * 10000) + (($$MonthOfDate:$OrderDueDate) * 100) + $$DayOfDate:$OrderDueDate
+
+[Field: DBVILRowType]
+    Use    : Name Field
+    Set As : ""
+    Width  : 10
+    XMLTag : "rowType"
+
+[Field: DBVILGuid]
+    Use    : Name Field
+    Set As : ""
+    Width  : 36
+    XMLTag : "guid"
+
+[Field: DBVILAlterID]
+    Use    : Number Field
+    Set As : ""
+    Width  : 12
+    XMLTag : "alterid"
+
+[Field: DBVILItem]
+    Use    : Name Field
+    Set As : ""
+    Width  : 40
+    XMLTag : "item"
+
+[Field: DBVILItemGuid]
+    Use    : Name Field
+    Set As : ""
+    Width  : 36
+    XMLTag : "itemGuid"
+
+[Field: DBVILQuantity]
+    Use    : Simple Field
+    Set As : ""
+    Width  : 15
+    XMLTag : "quantity"
+
+[Field: DBVILRate]
+    Use    : Simple Field
+    Set As : ""
+    Width  : 15
+    XMLTag : "rate"
+
+[Field: DBVILAmount]
+    Use    : Simple Field
+    Set As : ""
+    Width  : 15
+    XMLTag : "amount"
+
+[Field: DBVILAdditionalAmount]
+    Use    : Simple Field
+    Set As : ""
+    Width  : 15
+    XMLTag : "additionalAmount"
+
+[Field: DBVILDiscountAmount]
+    Use    : Simple Field
+    Set As : ""
+    Width  : 15
+    XMLTag : "discountAmount"
+
+[Field: DBVILGodown]
+    Use    : Name Field
+    Set As : ""
+    Width  : 30
+    XMLTag : "godown"
+
+[Field: DBVILGodownGuid]
+    Use    : Name Field
+    Set As : ""
+    Width  : 36
+    XMLTag : "godownGuid"
+
+[Field: DBVILTrackingNumber]
+    Use    : Name Field
+    Set As : ""
+    Width  : 25
+    XMLTag : "trackingNumber"
+
+[Field: DBVILOrderNumber]
+    Use    : Name Field
+    Set As : ""
+    Width  : 25
+    XMLTag : "orderNumber"
+
+[Field: DBVILOrderDueDate]
+    Use    : Name Field
+    Set As : ""
+    Width  : 10
+    XMLTag : "orderDueDate"
+
+[Collection: DBVILVouchers]
+    Type   : Voucher
+    Fetch  : Guid, AlterID, AllInventoryEntries
+    Filter : DBVILVoucherFilter, DBVILHasInventoryLines
+
+[System: Formula]
+    DBVILVoucherFilter   : (NOT $IsCancelled) AND (NOT $IsOptional) AND ($$IsInventoryVch:$VoucherTypeName OR $VoucherTypeName = "Sales") AND ($AlterID > ##DBVILFromAlterID) AND ((##DBVILToAlterID = 0) OR ($AlterID <= ##DBVILToAlterID))
+    DBVILHasInventoryLines : $$NumItems:AllInventoryEntries > 0

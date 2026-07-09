@@ -43,21 +43,31 @@ export async function recordSyncRunPing(run) {
     if (database.config.technology != 'postgres') {
         return;
     }
+    let client = null;
+    let shouldClosePool = false;
     try {
+        shouldClosePool = true;
         await database.openConnectionPool();
-        const client = await database.connectionPoolPostgres.connect();
-        try {
-            await client.query(buildSyncRunPingDDL());
-            const insert = buildSyncRunPingInsert(run);
-            await client.query(insert.sql, insert.params);
-        }
-        finally {
-            client.release();
-            await database.closeConnectionPool();
-        }
+        client = await database.connectionPoolPostgres.connect();
+        await client.query(buildSyncRunPingDDL());
+        const insert = buildSyncRunPingInsert(run);
+        await client.query(insert.sql, insert.params);
     }
     catch (err) {
         logger.logError('recordSyncRunPing()', err);
+    }
+    finally {
+        if (client) {
+            client.release();
+        }
+        if (shouldClosePool) {
+            try {
+                await database.closeConnectionPool();
+            }
+            catch (err) {
+                logger.logError('recordSyncRunPing.closeConnectionPool()', err);
+            }
+        }
     }
 }
 //# sourceMappingURL=sync-run-ping.mjs.map

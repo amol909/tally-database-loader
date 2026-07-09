@@ -12,3 +12,15 @@ test('custom godown stock TDL asset defines the API report and request', () => {
     assert.match(tdl, /GodownName/i);
     assert.match(request, /<ID>DB Godown Stock Snapshot<\/ID>/);
 });
+
+test('custom voucher inventory TDL asset defines voucher-driven inventory report', () => {
+    const tdl = fs.readFileSync('tdl/db-voucher-inventory-lines.tdl', 'utf8');
+    const request = fs.readFileSync('tdl/db-voucher-inventory-lines-request.xml', 'utf8');
+
+    assert.match(tdl, /\[Report\s*:\s*DB Voucher Inventory Lines\]/i);
+    assert.match(tdl, /Type\s*:\s*Voucher/i);
+    assert.match(tdl, /AllInventoryEntries/i);
+    assert.match(tdl, /DBVILFromAlterID/i);
+    assert.doesNotMatch(tdl, /^\s*Sort\s*:/im);
+    assert.match(request, /<ID>DB Voucher Inventory Lines<\/ID>/);
+});
