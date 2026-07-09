@@ -11,6 +11,11 @@ import { database } from './database.mjs';
 import { MetricsSink, PhaseTimer } from './metrics.mjs';
 import { HttpTallyTransport } from './tally-transport.mjs';
 import { YamlReportExporter, withAdditionalFilters, processTdlOutputManipulation } from './yaml-report-exporter.mjs';
+export function planIncrementalMasterTableSync(masterTables, isMasterChanged, _isTransactionChanged) {
+    return isMasterChanged
+        ? masterTables.map(table => ({ table, refreshAll: false }))
+        : [];
+}
 class _tally {
     config;
     lastAlterIdMaster = 0;
@@ -289,24 +294,9 @@ class _tally {
                                 }
                             }
                         }
-                        let lstMasterTablesToSync = flgIsMasterChanged
-                            ? this.lstTableMasterYaml.map(table => ({ table, refreshAll: false }))
-                            : [];
-                        if (flgIsTransactionChanged) {
-                            const stockItemTable = this.lstTableMasterYaml.find(p => p.name == 'mst_stock_item');
-                            if (stockItemTable) {
-                                const existingStockItem = lstMasterTablesToSync.find(p => p.table.name == 'mst_stock_item');
-                                if (existingStockItem) {
-                                    existingStockItem.refreshAll = true;
-                                }
-                                else {
-                                    lstMasterTablesToSync.push({ table: stockItemTable, refreshAll: true });
-                                }
-                            }
-                        }
+                        let lstMasterTablesToSync = planIncrementalMasterTableSync(this.lstTableMasterYaml, flgIsMasterChanged, flgIsTransactionChanged);
                         // iterate through Master tables to extract modified and added rows in Tally data
-                        // Stock item balances are refreshed fully after inventory vouchers because Tally
-                        // does not always change the StockItem AlterID when only stock quantity changes.
+                        // Stock balances are refreshed by the custom godown stock snapshot after sync.
                         if (lstMasterTablesToSync.length) {
                             for (let i = 0; i < lstMasterTablesToSync.length; i++) {
                                 const syncTarget = lstMasterTablesToSync[i];
