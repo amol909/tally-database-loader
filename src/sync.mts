@@ -126,15 +126,15 @@ async function invokeImport(): Promise<void> {
             tally.config,
             buildVoucherInventoryIncrementalOptions(voucherInventoryStartAlterId, voucherInventoryEndAlterId)
         );
-        const stockRows = await refreshGodownStockSummary(tally.config);
-        const customRows = stockRows + voucherRows;
+        const stock = await refreshGodownStockSummary(tally.config);
+        const customRows = stock.rowCount + voucherRows;
         await recordSyncRunPing({
             operation: 'sync',
             status: 'success',
             startedAt: runStartedAt,
             finishedAt: new Date(),
             rowsImported: customRows,
-            message: `Import completed successfully. stock_godown_summary=${stockRows}, trn_inventory=${voucherRows}.`
+            message: `Import completed successfully. stock_godown_summary=${stock.rowCount}, positive=${stock.positiveRows}, negative=${stock.negativeRows}, zero=${stock.zeroRows}, rejected=${stock.rejectedRows}, as_on_date=${stock.asOnDate}, snapshot_id=${stock.snapshotId}, trn_inventory=${voucherRows}.`
         });
         logger.logMessage('Import completed successfully [%s]', new Date().toLocaleString());
         if (activeStatus) {
@@ -307,16 +307,16 @@ export async function runStockGodownImport(config: appConfig, overrides = new Ma
     applyRuntimeConfig(config, overrides);
 
     try {
-        const rows = await refreshGodownStockSummary(tally.config);
+        const result = await refreshGodownStockSummary(tally.config);
         await recordSyncRunPing({
             operation: 'stock_godown_summary_custom_tdl',
             status: 'success',
             startedAt,
             finishedAt: new Date(),
-            rowsImported: rows,
-            message: 'Imported stock_godown_summary from DB Godown Stock Snapshot custom TDL.'
+            rowsImported: result.rowCount,
+            message: `Imported stock_godown_summary from DB Godown Stock Snapshot custom TDL. positive=${result.positiveRows}, negative=${result.negativeRows}, zero=${result.zeroRows}, rejected=${result.rejectedRows}, as_on_date=${result.asOnDate}, snapshot_id=${result.snapshotId}.`
         });
-        return rows;
+        return result.rowCount;
     } catch (err) {
         await recordSyncRunPing({
             operation: 'stock_godown_summary_custom_tdl',
