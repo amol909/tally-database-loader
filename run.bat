@@ -1,1 +1,1 @@
-node ./dist/cli.mjs
+node "./dist/cli.mjs" sync
