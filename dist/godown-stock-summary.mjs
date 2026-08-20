@@ -66,6 +66,9 @@ function textBetween(block, tag) {
     const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i').exec(block);
     return match ? decodeXml(match[1].trim()) : '';
 }
+function hasXmlTag(block, tag) {
+    return new RegExp(`<${tag}(?:\\s[^>]*)?\\s*/>|<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}>`, 'i').test(block);
+}
 function parseSignedQuantity(value) {
     let normalized = String(value || '').replace(/,/g, '').trim();
     if (!normalized) {
@@ -315,7 +318,10 @@ export function parseGodownStockSnapshot(xml) {
         const rowSourceCompany = textBetween(block, 'sourceCompany');
         const rowAsOnDate = parseTallyDate(textBetween(block, 'asOnDate')) || '';
         const rawQuantity = textBetween(block, 'closingQty');
-        const { qty, uom } = parseSignedQuantity(rawQuantity);
+        // Tally exports a present but empty quantity field for explicit zero allocations.
+        const { qty, uom } = !rawQuantity && hasXmlTag(block, 'closingQty')
+            ? { qty: '0', uom: '' }
+            : parseSignedQuantity(rawQuantity);
         const missing = [
             !item && 'stockItem',
             !itemGuid && 'itemGuid',

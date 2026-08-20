@@ -349,6 +349,61 @@ test('normalizes supported Tally negative quantity formats and records sign metr
     });
 });
 
+test('treats an explicitly empty TDL closing quantity as zero stock', () => {
+    const xml = `<ENVELOPE>
+      <rowType>GODOWN</rowType>
+      <stockItem>Zero Item</stockItem>
+      <itemGuid>zero-item-guid</itemGuid>
+      <godown>Main Location</godown>
+      <closingQty></closingQty>
+      <uom>PCS</uom>
+      <asOnDate>20260820</asOnDate>
+      <sourceCompany>Kunal Enterprises</sourceCompany>
+    </ENVELOPE>`;
+
+    const result = parseGodownStockSnapshot(xml);
+
+    assert.equal(result.rows[0].closingQty, '0');
+    assert.equal(result.rows[0].uom, 'PCS');
+    assert.equal(result.metrics.zeroRows, 1);
+});
+
+test('rejects a Godown row when the closing quantity tag is missing', () => {
+    const xml = `<ENVELOPE>
+      <rowType>GODOWN</rowType>
+      <stockItem>Broken Item</stockItem>
+      <itemGuid>broken-item-guid</itemGuid>
+      <godown>Main Location</godown>
+      <asOnDate>20260820</asOnDate>
+      <sourceCompany>Kunal Enterprises</sourceCompany>
+    </ENVELOPE>`;
+
+    assert.throws(
+        () => parseGodownStockSnapshot(xml),
+        error => error instanceof GodownStockSnapshotValidationError
+            && /invalid closingQty/.test(error.message)
+    );
+});
+
+test('rejects an unterminated empty closing quantity tag', () => {
+    const xml = `<ENVELOPE>
+      <rowType>GODOWN</rowType>
+      <stockItem>Broken Item</stockItem>
+      <itemGuid>broken-item-guid</itemGuid>
+      <godown>Main Location</godown>
+      <closingQty>
+      <uom>PCS</uom>
+      <asOnDate>20260820</asOnDate>
+      <sourceCompany>Kunal Enterprises</sourceCompany>
+    </ENVELOPE>`;
+
+    assert.throws(
+        () => parseGodownStockSnapshot(xml),
+        error => error instanceof GodownStockSnapshotValidationError
+            && /invalid closingQty/.test(error.message)
+    );
+});
+
 test('rejects malformed quantity rows instead of publishing a partial snapshot', () => {
     const xml = `<ENVELOPE>
       <rowType>GODOWN</rowType>
