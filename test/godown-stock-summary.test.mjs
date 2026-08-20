@@ -1,17 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    acquireGodownStockRefreshLock,
     buildGodownStockSnapshotRequest,
     buildGodownSummaryRequest,
     buildStockSummaryRequest,
+    ensureGodownStockSnapshotSchema,
     GodownStockSnapshotValidationError,
     parseGodownStockSnapshot,
     parseGodownStockSnapshotRows,
     populateGodownGuids,
     parseGodownSummaryRows,
     parseStockSummaryRows,
+    publishGodownStockSnapshot,
+    releaseGodownStockRefreshLock,
     replaceGodownStockSummaryRows
 } from '../dist/godown-stock-summary.mjs';
+
+test('rejects an overlapping cross-process Godown stock refresh', async () => {
+    const client = {
+        async query() {
+            return { rows: [{ acquired: false }] };
+        }
+    };
+
+    await assert.rejects(
+        acquireGodownStockRefreshLock(client),
+        /Godown stock refresh is already running/
+    );
+});
+
+test('holds and releases the cross-process lock around a Godown stock refresh', async () => {
+    const queries = [];
+    const client = {
+        async query(sql) {
+            queries.push(String(sql).replace(/\s+/g, ' ').trim().toLowerCase());
+            return { rows: [{ acquired: true }] };
+        }
+    };
+
+    await acquireGodownStockRefreshLock(client);
+    await releaseGodownStockRefreshLock(client);
+
+    assert.match(queries[0], /pg_try_advisory_lock/);
+    assert.match(queries[1], /pg_advisory_unlock/);
+});
 
 test('parses old TDL quantity output before Godown GUID enrichment', () => {
     const xml = `<ENVELOPE>
@@ -473,6 +506,82 @@ test('rejects empty replacements and blank quantities before opening PostgreSQL'
         }),
         error => error instanceof GodownStockSnapshotValidationError && /invalid closingQty/.test(error.message)
     );
+});
+
+test('publishes snapshots without table-exclusive statements and serializes writers', async () => {
+    const queries = [];
+    const client = {
+        async query(sql, params = []) {
+            queries.push({ sql: String(sql).replace(/\s+/g, ' ').trim(), params });
+            return { rows: [] };
+        }
+    };
+    const row = {
+        rowType: 'GODOWN',
+        stockGroup: '',
+        item: 'Item A',
+        itemGuid: 'item-guid-a',
+        batchName: '',
+        godown: 'Main',
+        godownGuid: 'godown-guid-main',
+        closingQty: '-2',
+        uom: 'PCS',
+        closingRate: null,
+        closingValue: null,
+        asOnDate: '2026-08-17',
+        sourceCompany: 'Kunal Enterprises'
+    };
+
+    await publishGodownStockSnapshot(client, [row], {
+        snapshotId: 'new-snapshot',
+        sourceCompany: 'Kunal Enterprises',
+        asOnDate: '2026-08-17',
+        refreshedAt: new Date('2026-08-17T12:00:00Z'),
+        metrics: {
+            rawRows: 1,
+            acceptedRows: 1,
+            positiveRows: 0,
+            negativeRows: 1,
+            zeroRows: 0,
+            rejectedRows: 0
+        }
+    });
+
+    const sql = queries.map(query => query.sql.toLowerCase());
+    assert.equal(sql[0], 'begin');
+    assert.match(sql[1], /pg_advisory_xact_lock/);
+    assert.doesNotMatch(sql.join('\n'), /truncate table|alter table|create table/);
+
+    const replacementIndex = sql.findIndex(statement => statement === 'delete from "public"."stock_godown_summary"');
+    const insertIndex = sql.findIndex(statement => statement.startsWith('insert into "public"."stock_godown_summary"'));
+    const stateIndex = sql.findIndex(statement => statement.startsWith('insert into "public"."stock_godown_summary_state"'));
+    assert.ok(replacementIndex > 1);
+    assert.ok(insertIndex > replacementIndex);
+    assert.ok(stateIndex > insertIndex);
+    assert.equal(sql.at(-1), 'commit');
+});
+
+test('locks snapshot state before applying a legacy summary schema upgrade', async () => {
+    const queries = [];
+    const client = {
+        async query(sql, params = []) {
+            const normalized = String(sql).replace(/\s+/g, ' ').trim().toLowerCase();
+            queries.push({ sql: normalized, params });
+            return { rows: normalized.startsWith('select to_regclass') ? [{ ready: false }] : [] };
+        }
+    };
+
+    await ensureGodownStockSnapshotSchema(client);
+
+    const sql = queries.map(query => query.sql);
+    const stateCreateIndex = sql.findIndex(statement => statement.startsWith('create table if not exists public.stock_godown_summary_state'));
+    const stateLockIndex = sql.findIndex(statement => statement.startsWith('lock table public.stock_godown_summary_state'));
+    const summaryCreateIndex = sql.findIndex(statement => statement.startsWith('create table if not exists public.stock_godown_summary ('));
+    assert.ok(stateCreateIndex > 1);
+    assert.ok(stateLockIndex > stateCreateIndex);
+    assert.ok(summaryCreateIndex > stateLockIndex);
+    assert.match(sql.join('\n'), /alter table public\.stock_godown_summary add column if not exists source_snapshot_id/);
+    assert.equal(sql.at(-1), 'commit');
 });
 
 test('custom stock snapshot request selects the loaded TDL report with an explicit period', () => {

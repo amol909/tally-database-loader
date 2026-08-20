@@ -444,71 +444,70 @@ function validateSnapshotForReplacement(rows, sourceCompany, asOnDate, metrics) 
 export function parseGodownStockSnapshotRows(xml) {
     return parseGodownStockSnapshot(xml).rows;
 }
-async function populateGodownGuidsFromPostgres(rows) {
-    await database.openConnectionPool();
-    try {
-        const result = await database.connectionPoolPostgres.query(`
-            select name, guid
-            from public.mst_godown
-            where coalesce(btrim(name), '') <> ''
-              and coalesce(btrim(guid), '') <> ''
-        `);
-        return populateGodownGuids(rows, result.rows);
-    }
-    finally {
-        await database.closeConnectionPool();
+export async function acquireGodownStockRefreshLock(client) {
+    const result = await client.query(`select pg_try_advisory_lock(
+            hashtext(current_database()),
+            hashtext('tally-database-loader:stock-godown-summary')
+        ) as acquired`);
+    if (!Boolean(result.rows[0]?.acquired)) {
+        throw new Error('Godown stock refresh is already running in another process.');
     }
 }
-export async function replaceGodownStockSummaryRows(rows, options = {}) {
-    const qualifiedTable = `${ident('public')}.${ident('stock_godown_summary')}`;
-    const stateTable = `${ident('public')}.${ident('stock_godown_summary_state')}`;
-    const snapshotId = options.snapshotId?.trim() || randomUUID();
-    const sourceCompany = options.sourceCompany || rows[0]?.sourceCompany || '';
-    const asOnDate = options.asOnDate || rows[0]?.asOnDate || null;
-    const refreshedAt = options.refreshedAt || new Date();
-    const metrics = options.metrics || {
-        rawRows: rows.length,
-        acceptedRows: rows.length,
-        positiveRows: rows.filter(row => Number(row.closingQty) > 0).length,
-        negativeRows: rows.filter(row => Number(row.closingQty) < 0).length,
-        zeroRows: rows.filter(row => Number(row.closingQty) == 0).length,
-        rejectedRows: 0
-    };
-    validateSnapshotForReplacement(rows, sourceCompany, asOnDate, metrics);
-    await database.openConnectionPool();
-    const client = await database.connectionPoolPostgres.connect();
-    try {
-        await client.query('begin');
-        await client.query(`create table if not exists ${qualifiedTable} (
-            item text not null,
-            item_guid text null,
-            godown text not null,
-            godown_guid text null,
-            closing_qty numeric null,
-            uom text null,
-            closing_rate numeric null,
-            closing_value numeric null,
-            stock_group text null,
-            batch_name text null,
-            row_type text not null default 'GODOWN',
-            as_on_date date null,
-            source_company text null,
-            source_snapshot_id text null,
-            imported_at timestamptz not null default now()
+export async function releaseGodownStockRefreshLock(client) {
+    await client.query(`select pg_advisory_unlock(
+            hashtext(current_database()),
+            hashtext('tally-database-loader:stock-godown-summary')
         )`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists item_guid text null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists godown_guid text null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists stock_group text null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists batch_name text null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists row_type text not null default 'GODOWN'`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists as_on_date date null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists source_company text null`);
-        await client.query(`alter table ${qualifiedTable} add column if not exists source_snapshot_id text null`);
-        await client.query(`create table if not exists ${stateTable} (
+}
+async function populateGodownGuidsFromPostgres(client, rows) {
+    const result = await client.query(`
+        select name, guid
+        from public.mst_godown
+        where coalesce(btrim(name), '') <> ''
+          and coalesce(btrim(guid), '') <> ''
+    `);
+    return populateGodownGuids(rows, result.rows);
+}
+const STOCK_SUMMARY_COLUMNS = [
+    'item', 'item_guid', 'godown', 'godown_guid', 'closing_qty', 'uom',
+    'closing_rate', 'closing_value', 'stock_group', 'batch_name', 'row_type',
+    'as_on_date', 'source_company', 'source_snapshot_id', 'imported_at'
+];
+const STOCK_STATE_COLUMNS = [
+    'singleton', 'snapshot_id', 'source_company', 'as_on_date', 'refreshed_at',
+    'raw_rows', 'accepted_rows', 'positive_rows', 'negative_rows', 'zero_rows',
+    'rejected_rows', 'snapshot_complete'
+];
+export async function ensureGodownStockSnapshotSchema(client) {
+    const readiness = await client.query(`select
+            to_regclass('public.stock_godown_summary') is not null
+            and to_regclass('public.stock_godown_summary_state') is not null
+            and (
+                select count(*) from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'stock_godown_summary'
+                  and column_name = any($1::text[])
+            ) = $2
+            and (
+                select count(*) from information_schema.columns
+                where table_schema = 'public'
+                  and table_name = 'stock_godown_summary_state'
+                  and column_name = any($3::text[])
+            ) = $4 as ready`, [STOCK_SUMMARY_COLUMNS, STOCK_SUMMARY_COLUMNS.length, STOCK_STATE_COLUMNS, STOCK_STATE_COLUMNS.length]);
+    if (Boolean(readiness.rows[0]?.ready)) {
+        return;
+    }
+    await client.query('begin');
+    try {
+        await client.query(`select pg_advisory_xact_lock(
+                hashtext(current_database()),
+                hashtext('tally-database-loader:stock-godown-summary')
+            )`);
+        await client.query(`create table if not exists public.stock_godown_summary_state (
             singleton boolean primary key default true check (singleton),
             snapshot_id text not null,
-            source_company text null,
-            as_on_date date null,
+            source_company text not null,
+            as_on_date date not null,
             refreshed_at timestamptz not null,
             raw_rows integer not null,
             accepted_rows integer not null,
@@ -518,26 +517,56 @@ export async function replaceGodownStockSummaryRows(rows, options = {}) {
             rejected_rows integer not null,
             snapshot_complete boolean not null
         )`);
-        await client.query(`truncate table ${qualifiedTable}`);
-        await client.query(`alter table ${qualifiedTable}
-            alter column item set not null,
-            alter column item_guid set not null,
-            alter column godown set not null,
-            alter column godown_guid set not null,
-            alter column closing_qty set not null,
-            alter column row_type set not null,
-            alter column as_on_date set not null,
-            alter column source_company set not null,
-            alter column source_snapshot_id set not null,
-            alter column imported_at set default now(),
-            alter column imported_at set not null`);
+        await client.query('lock table public.stock_godown_summary_state in access exclusive mode');
+        await client.query(`create table if not exists public.stock_godown_summary (
+            item text not null,
+            item_guid text not null,
+            godown text not null,
+            godown_guid text not null,
+            closing_qty numeric not null,
+            uom text null,
+            closing_rate numeric null,
+            closing_value numeric null,
+            stock_group text null,
+            batch_name text null,
+            row_type text not null default 'GODOWN',
+            as_on_date date not null,
+            source_company text not null,
+            source_snapshot_id text not null,
+            imported_at timestamptz not null default now()
+        )`);
+        await client.query('alter table public.stock_godown_summary add column if not exists item_guid text null');
+        await client.query('alter table public.stock_godown_summary add column if not exists godown_guid text null');
+        await client.query('alter table public.stock_godown_summary add column if not exists stock_group text null');
+        await client.query('alter table public.stock_godown_summary add column if not exists batch_name text null');
+        await client.query("alter table public.stock_godown_summary add column if not exists row_type text not null default 'GODOWN'");
+        await client.query('alter table public.stock_godown_summary add column if not exists as_on_date date null');
+        await client.query('alter table public.stock_godown_summary add column if not exists source_company text null');
+        await client.query('alter table public.stock_godown_summary add column if not exists source_snapshot_id text null');
+        await client.query('commit');
+    }
+    catch (err) {
+        await client.query('rollback');
+        throw err;
+    }
+}
+export async function publishGodownStockSnapshot(client, rows, publication) {
+    const qualifiedTable = `${ident('public')}.${ident('stock_godown_summary')}`;
+    const stateTable = `${ident('public')}.${ident('stock_godown_summary_state')}`;
+    await client.query('begin');
+    try {
+        await client.query(`select pg_advisory_xact_lock(
+                hashtext(current_database()),
+                hashtext('tally-database-loader:stock-godown-summary')
+            )`);
+        await client.query(`delete from ${qualifiedTable}`);
         const batchSize = 500;
         for (let index = 0; index < rows.length; index += batchSize) {
             const batch = rows.slice(index, index + batchSize);
             const params = [];
             const values = batch.map((row, rowIndex) => {
                 const offset = rowIndex * 14;
-                params.push(row.item, row.itemGuid, row.godown, row.godownGuid, row.closingQty, row.uom, row.closingRate, row.closingValue, row.stockGroup, row.batchName, row.rowType, row.asOnDate, row.sourceCompany, snapshotId);
+                params.push(row.item, row.itemGuid, row.godown, row.godownGuid, row.closingQty, row.uom, row.closingRate, row.closingValue, row.stockGroup, row.batchName, row.rowType, row.asOnDate, row.sourceCompany, publication.snapshotId);
                 return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14})`;
             }).join(',');
             await client.query(`insert into ${qualifiedTable} (item, item_guid, godown, godown_guid, closing_qty, uom, closing_rate, closing_value, stock_group, batch_name, row_type, as_on_date, source_company, source_snapshot_id) values ${values}`, params);
@@ -559,29 +588,54 @@ export async function replaceGodownStockSummaryRows(rows, options = {}) {
                 zero_rows = excluded.zero_rows,
                 rejected_rows = excluded.rejected_rows,
                 snapshot_complete = excluded.snapshot_complete`, [
-            snapshotId,
-            sourceCompany || null,
-            asOnDate,
-            refreshedAt,
-            metrics.rawRows,
-            metrics.acceptedRows,
-            metrics.positiveRows,
-            metrics.negativeRows,
-            metrics.zeroRows,
-            metrics.rejectedRows
+            publication.snapshotId,
+            publication.sourceCompany,
+            publication.asOnDate,
+            publication.refreshedAt,
+            publication.metrics.rawRows,
+            publication.metrics.acceptedRows,
+            publication.metrics.positiveRows,
+            publication.metrics.negativeRows,
+            publication.metrics.zeroRows,
+            publication.metrics.rejectedRows
         ]);
-        await client.query(`alter table ${stateTable}
-            alter column source_company set not null,
-            alter column as_on_date set not null`);
         await client.query('commit');
-        return rows.length;
     }
     catch (err) {
         await client.query('rollback');
         throw err;
     }
+}
+export async function replaceGodownStockSummaryRows(rows, options = {}) {
+    const snapshotId = options.snapshotId?.trim() || randomUUID();
+    const sourceCompany = options.sourceCompany || rows[0]?.sourceCompany || '';
+    const asOnDate = options.asOnDate || rows[0]?.asOnDate || null;
+    const refreshedAt = options.refreshedAt || new Date();
+    const metrics = options.metrics || {
+        rawRows: rows.length,
+        acceptedRows: rows.length,
+        positiveRows: rows.filter(row => Number(row.closingQty) > 0).length,
+        negativeRows: rows.filter(row => Number(row.closingQty) < 0).length,
+        zeroRows: rows.filter(row => Number(row.closingQty) == 0).length,
+        rejectedRows: 0
+    };
+    validateSnapshotForReplacement(rows, sourceCompany, asOnDate, metrics);
+    await database.openConnectionPool();
+    let client;
+    try {
+        client = await database.connectionPoolPostgres.connect();
+        await ensureGodownStockSnapshotSchema(client);
+        await publishGodownStockSnapshot(client, rows, {
+            snapshotId,
+            sourceCompany,
+            asOnDate: asOnDate,
+            refreshedAt,
+            metrics
+        });
+        return rows.length;
+    }
     finally {
-        client.release();
+        client?.release();
         await database.closeConnectionPool();
     }
 }
@@ -602,24 +656,47 @@ export async function refreshGodownStockSummary(config) {
         };
     }
     logger.logMessage('Refreshing godown stock summary [%s]', new Date().toLocaleString());
-    const transport = new HttpTallyTransport(config);
-    const xml = await transport.post(buildGodownStockSnapshotRequest(config));
-    const parsed = parseGodownStockSnapshot(xml);
-    const rows = await populateGodownGuidsFromPostgres(parsed.rows);
-    const snapshotId = randomUUID();
-    const rowCount = await replaceGodownStockSummaryRows(rows, {
-        snapshotId,
-        sourceCompany: parsed.sourceCompany,
-        asOnDate: parsed.asOnDate,
-        metrics: parsed.metrics
-    });
-    logger.logMessage('  stock_godown_summary: imported %d rows (positive=%d, negative=%d, zero=%d, rejected=%d)', rowCount, parsed.metrics.positiveRows, parsed.metrics.negativeRows, parsed.metrics.zeroRows, parsed.metrics.rejectedRows);
-    return {
-        rowCount,
-        snapshotId,
-        sourceCompany: parsed.sourceCompany,
-        asOnDate: parsed.asOnDate,
-        ...parsed.metrics
-    };
+    await database.openConnectionPool();
+    let client;
+    let lockAcquired = false;
+    try {
+        client = await database.connectionPoolPostgres.connect();
+        await acquireGodownStockRefreshLock(client);
+        lockAcquired = true;
+        const transport = new HttpTallyTransport(config);
+        const xml = await transport.post(buildGodownStockSnapshotRequest(config));
+        const parsed = parseGodownStockSnapshot(xml);
+        const rows = await populateGodownGuidsFromPostgres(client, parsed.rows);
+        const snapshotId = randomUUID();
+        validateSnapshotForReplacement(rows, parsed.sourceCompany, parsed.asOnDate, parsed.metrics);
+        await ensureGodownStockSnapshotSchema(client);
+        await publishGodownStockSnapshot(client, rows, {
+            snapshotId,
+            sourceCompany: parsed.sourceCompany,
+            asOnDate: parsed.asOnDate,
+            refreshedAt: new Date(),
+            metrics: parsed.metrics
+        });
+        logger.logMessage('  stock_godown_summary: imported %d rows (positive=%d, negative=%d, zero=%d, rejected=%d)', rows.length, parsed.metrics.positiveRows, parsed.metrics.negativeRows, parsed.metrics.zeroRows, parsed.metrics.rejectedRows);
+        return {
+            rowCount: rows.length,
+            snapshotId,
+            sourceCompany: parsed.sourceCompany,
+            asOnDate: parsed.asOnDate,
+            ...parsed.metrics
+        };
+    }
+    finally {
+        if (client && lockAcquired) {
+            try {
+                await releaseGodownStockRefreshLock(client);
+            }
+            catch (err) {
+                logger.logError('releaseGodownStockRefreshLock()', err);
+            }
+        }
+        client?.release();
+        await database.closeConnectionPool();
+    }
 }
 //# sourceMappingURL=godown-stock-summary.mjs.map
