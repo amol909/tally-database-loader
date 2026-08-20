@@ -39,6 +39,50 @@ export interface godownStockSnapshotParseResult {
     asOnDate: string;
 }
 
+export function populateGodownGuids<T extends Pick<godownStockDetailRow, 'godown' | 'godownGuid'>>(
+    rows: T[],
+    godowns: { name: string; guid: string }[]
+): T[] {
+    const guidByName = new Map<string, string>();
+    const ambiguousNames = new Set<string>();
+
+    for (const godown of godowns) {
+        const name = godown.name?.trim();
+        const guid = godown.guid?.trim();
+        if (!name || !guid) {
+            continue;
+        }
+
+        const existingGuid = guidByName.get(name);
+        if (existingGuid && existingGuid !== guid) {
+            ambiguousNames.add(name);
+            continue;
+        }
+        guidByName.set(name, guid);
+    }
+
+    const rejections: string[] = [];
+    const populatedRows = rows.map((row, index) => {
+        const godownName = row.godown.trim();
+        if (ambiguousNames.has(godownName)) {
+            rejections.push(`row ${index + 1}: multiple PostgreSQL GUIDs for godown=${JSON.stringify(godownName)}`);
+            return row;
+        }
+
+        const godownGuid = guidByName.get(godownName);
+        if (!godownGuid) {
+            rejections.push(`row ${index + 1}: no PostgreSQL GUID for godown=${JSON.stringify(godownName)}`);
+            return row;
+        }
+        return { ...row, godownGuid };
+    });
+
+    if (rejections.length) {
+        throw new GodownStockSnapshotValidationError(rejections);
+    }
+    return populatedRows;
+}
+
 export interface godownStockRefreshResult extends godownStockSnapshotMetrics {
     rowCount: number;
     snapshotId: string;
@@ -367,7 +411,6 @@ export function parseGodownStockSnapshot(xml: string): godownStockSnapshotParseR
             !item && 'stockItem',
             !itemGuid && 'itemGuid',
             !godown && 'godown',
-            !godownGuid && 'godownGuid',
             !rowSourceCompany && 'sourceCompany',
             !rowAsOnDate && 'asOnDate'
         ].filter(Boolean);
@@ -507,6 +550,23 @@ function validateSnapshotForReplacement(
 
 export function parseGodownStockSnapshotRows(xml: string): godownStockDetailRow[] {
     return parseGodownStockSnapshot(xml).rows;
+}
+
+async function populateGodownGuidsFromPostgres(
+    rows: godownStockDetailRow[]
+): Promise<godownStockDetailRow[]> {
+    await database.openConnectionPool();
+    try {
+        const result = await database.connectionPoolPostgres.query<{ name: string; guid: string }>(`
+            select name, guid
+            from public.mst_godown
+            where coalesce(btrim(name), '') <> ''
+              and coalesce(btrim(guid), '') <> ''
+        `);
+        return populateGodownGuids(rows, result.rows);
+    } finally {
+        await database.closeConnectionPool();
+    }
 }
 
 export async function replaceGodownStockSummaryRows(
@@ -690,8 +750,9 @@ export async function refreshGodownStockSummary(config: tallyConfig): Promise<go
     const transport = new HttpTallyTransport(config);
     const xml = await transport.post(buildGodownStockSnapshotRequest(config));
     const parsed = parseGodownStockSnapshot(xml);
+    const rows = await populateGodownGuidsFromPostgres(parsed.rows);
     const snapshotId = randomUUID();
-    const rowCount = await replaceGodownStockSummaryRows(parsed.rows, {
+    const rowCount = await replaceGodownStockSummaryRows(rows, {
         snapshotId,
         sourceCompany: parsed.sourceCompany,
         asOnDate: parsed.asOnDate,

@@ -11,11 +11,15 @@ test('custom godown stock TDL asset defines the API report and request', () => {
     assert.match(tdl, /Child Of\s*:\s*#DBGSSStockItemName/i);
     assert.match(tdl, /GodownName/i);
     assert.match(tdl, /XMLTag\s*:\s*"itemGuid"/i);
-    assert.match(tdl, /XMLTag\s*:\s*"godownGuid"/i);
+    assert.doesNotMatch(tdl, /XMLTag\s*:\s*"godownGuid"/i);
+    assert.doesNotMatch(tdl, /\$Guid\s*:\s*Godown/i);
     assert.match(tdl, /XMLTag\s*:\s*"asOnDate"/i);
     assert.match(tdl, /\[Field\s*:\s*DBGSSAsOnDate\][\s\S]*?Use\s*:\s*Name Field/i);
     assert.match(tdl, /XMLTag\s*:\s*"sourceCompany"/i);
-    assert.match(tdl, /StringFindAndReplace[\s\S]*"\(-\)"\s*:\s*"-"/i);
+    assert.match(
+        tdl,
+        /DBGSSClosingQty\s*:\s*Set As\s*:\s*If \$\$IsEmpty:\$StkClBalance Then \$ClosingBalance Else \$StkClBalance/i
+    );
     assert.match(request, /<ID>DB Godown Stock Snapshot<\/ID>/);
     assert.match(request, /<SVFROMDATE>\d{8}<\/SVFROMDATE>/);
     assert.match(request, /<SVTODATE>\d{8}<\/SVTODATE>/);

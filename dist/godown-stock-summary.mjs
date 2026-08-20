@@ -2,6 +2,41 @@ import { randomUUID } from 'node:crypto';
 import { database } from './database.mjs';
 import { logger } from './logger.mjs';
 import { HttpTallyTransport } from './tally-transport.mjs';
+export function populateGodownGuids(rows, godowns) {
+    const guidByName = new Map();
+    const ambiguousNames = new Set();
+    for (const godown of godowns) {
+        const name = godown.name?.trim();
+        const guid = godown.guid?.trim();
+        if (!name || !guid) {
+            continue;
+        }
+        const existingGuid = guidByName.get(name);
+        if (existingGuid && existingGuid !== guid) {
+            ambiguousNames.add(name);
+            continue;
+        }
+        guidByName.set(name, guid);
+    }
+    const rejections = [];
+    const populatedRows = rows.map((row, index) => {
+        const godownName = row.godown.trim();
+        if (ambiguousNames.has(godownName)) {
+            rejections.push(`row ${index + 1}: multiple PostgreSQL GUIDs for godown=${JSON.stringify(godownName)}`);
+            return row;
+        }
+        const godownGuid = guidByName.get(godownName);
+        if (!godownGuid) {
+            rejections.push(`row ${index + 1}: no PostgreSQL GUID for godown=${JSON.stringify(godownName)}`);
+            return row;
+        }
+        return { ...row, godownGuid };
+    });
+    if (rejections.length) {
+        throw new GodownStockSnapshotValidationError(rejections);
+    }
+    return populatedRows;
+}
 export class GodownStockSnapshotValidationError extends Error {
     rejections;
     constructor(rejections) {
@@ -285,7 +320,6 @@ export function parseGodownStockSnapshot(xml) {
             !item && 'stockItem',
             !itemGuid && 'itemGuid',
             !godown && 'godown',
-            !godownGuid && 'godownGuid',
             !rowSourceCompany && 'sourceCompany',
             !rowAsOnDate && 'asOnDate'
         ].filter(Boolean);
@@ -409,6 +443,21 @@ function validateSnapshotForReplacement(rows, sourceCompany, asOnDate, metrics) 
 }
 export function parseGodownStockSnapshotRows(xml) {
     return parseGodownStockSnapshot(xml).rows;
+}
+async function populateGodownGuidsFromPostgres(rows) {
+    await database.openConnectionPool();
+    try {
+        const result = await database.connectionPoolPostgres.query(`
+            select name, guid
+            from public.mst_godown
+            where coalesce(btrim(name), '') <> ''
+              and coalesce(btrim(guid), '') <> ''
+        `);
+        return populateGodownGuids(rows, result.rows);
+    }
+    finally {
+        await database.closeConnectionPool();
+    }
 }
 export async function replaceGodownStockSummaryRows(rows, options = {}) {
     const qualifiedTable = `${ident('public')}.${ident('stock_godown_summary')}`;
@@ -556,8 +605,9 @@ export async function refreshGodownStockSummary(config) {
     const transport = new HttpTallyTransport(config);
     const xml = await transport.post(buildGodownStockSnapshotRequest(config));
     const parsed = parseGodownStockSnapshot(xml);
+    const rows = await populateGodownGuidsFromPostgres(parsed.rows);
     const snapshotId = randomUUID();
-    const rowCount = await replaceGodownStockSummaryRows(parsed.rows, {
+    const rowCount = await replaceGodownStockSummaryRows(rows, {
         snapshotId,
         sourceCompany: parsed.sourceCompany,
         asOnDate: parsed.asOnDate,

@@ -7,10 +7,76 @@ import {
     GodownStockSnapshotValidationError,
     parseGodownStockSnapshot,
     parseGodownStockSnapshotRows,
+    populateGodownGuids,
     parseGodownSummaryRows,
     parseStockSummaryRows,
     replaceGodownStockSummaryRows
 } from '../dist/godown-stock-summary.mjs';
+
+test('parses old TDL quantity output before Godown GUID enrichment', () => {
+    const xml = `<ENVELOPE>
+      <rowType>GODOWN</rowType>
+      <stockItem>Negative Item</stockItem>
+      <itemGuid>item-guid-negative</itemGuid>
+      <godown>Main</godown>
+      <closingQty>(-)2 PCS</closingQty>
+      <asOnDate>20260817</asOnDate>
+      <sourceCompany>Kunal Enterprises</sourceCompany>
+      <rowType>GODOWN</rowType>
+      <stockItem>Zero Item</stockItem>
+      <itemGuid>item-guid-zero</itemGuid>
+      <godown>Branch</godown>
+      <closingQty>0 PCS</closingQty>
+      <asOnDate>20260817</asOnDate>
+      <sourceCompany>Kunal Enterprises</sourceCompany>
+    </ENVELOPE>`;
+
+    const result = parseGodownStockSnapshot(xml);
+
+    assert.deepEqual(result.rows.map(row => [row.closingQty, row.godownGuid]), [
+        ['-2', ''],
+        ['0', '']
+    ]);
+    assert.equal(result.metrics.negativeRows, 1);
+    assert.equal(result.metrics.zeroRows, 1);
+});
+
+test('populates Godown GUIDs from PostgreSQL master rows by Godown name', () => {
+    const rows = [
+        { godown: ' Main ', godownGuid: '' },
+        { godown: 'Branch', godownGuid: 'tdl-guid-is-not-authoritative' }
+    ];
+
+    const populated = populateGodownGuids(rows, [
+        { name: 'Main', guid: 'main-guid' },
+        { name: 'Branch', guid: 'branch-guid' }
+    ]);
+
+    assert.deepEqual(populated.map(row => row.godownGuid), ['main-guid', 'branch-guid']);
+    assert.equal(rows[0].godownGuid, '');
+});
+
+test('rejects a snapshot when PostgreSQL has no unique Godown name mapping', () => {
+    assert.throws(
+        () => populateGodownGuids(
+            [{ godown: 'Main', godownGuid: '' }],
+            [
+                { name: 'Main', guid: 'first-guid' },
+                { name: 'Main', guid: 'second-guid' }
+            ]
+        ),
+        error => error instanceof GodownStockSnapshotValidationError
+            && /multiple PostgreSQL GUIDs/.test(error.message)
+    );
+    assert.throws(
+        () => populateGodownGuids(
+            [{ godown: 'Missing', godownGuid: '' }],
+            [{ name: 'Main', guid: 'main-guid' }]
+        ),
+        error => error instanceof GodownStockSnapshotValidationError
+            && /no PostgreSQL GUID/.test(error.message)
+    );
+});
 
 test('parses stock summary rows when godown stock info is nested inside SSBATCHNAME blocks', () => {
     const xml = `
