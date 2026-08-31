@@ -24,20 +24,25 @@
 
 [Line: DBGSSHeaderLine]
     Invisible   : $$InExportMode
-    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSStockItemGuid, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSAsOnDate, DBGSSSourceCompany
     Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
     Local       : Field : DBGSSRowType      : Set As : "Row Type"
     Local       : Field : DBGSSStockGroup   : Set As : "Stock Group"
     Local       : Field : DBGSSStockItemName: Set As : "Stock Item"
+    Local       : Field : DBGSSStockItemGuid: Set As : "Stock Item GUID"
     Local       : Field : DBGSSBatchName    : Set As : "Batch/Particular"
     Local       : Field : DBGSSGodownName   : Set As : "Godown"
+    Local       : Field : DBGSSAsOnDate     : Set As : "As On Date"
+    Local       : Field : DBGSSSourceCompany: Set As : "Source Company"
     Local       : Field : DBGSSClosingQty   : Set As : "Closing Qty"
     Local       : Field : DBGSSUOM          : Set As : "UOM"
     Local       : Field : DBGSSClosingRate  : Set As : "Closing Rate"
     Local       : Field : DBGSSClosingValue : Set As : "Closing Value"
 
 [Line: DBGSSStockItemLine]
-    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSStockItemGuid, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSAsOnDate, DBGSSSourceCompany
     Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
     Explode     : DBGSSBatchPart
 
@@ -46,12 +51,14 @@
     Repeat : DBGSSBatchLine : DBGSSBatchRows
 
 [Line: DBGSSBatchLine]
-    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSRowType, DBGSSStockGroup, DBGSSStockItemName, DBGSSStockItemGuid, DBGSSBatchName, DBGSSGodownName
+    Field       : DBGSSAsOnDate, DBGSSSourceCompany
     Right Field : DBGSSClosingQty, DBGSSUOM, DBGSSClosingRate, DBGSSClosingValue
     Empty       : $$IsEmpty:$GodownName
     Local       : Field : DBGSSRowType       : Set As : "GODOWN"
     Local       : Field : DBGSSStockGroup    : Set As : $$ExplodeOwner:#DBGSSStockGroup
     Local       : Field : DBGSSStockItemName : Set As : $$ExplodeOwner:#DBGSSStockItemName
+    Local       : Field : DBGSSStockItemGuid : Set As : $$ExplodeOwner:#DBGSSStockItemGuid
     Local       : Field : DBGSSBatchName     : Set As : If $$IsEmpty:$Name Then $BatchName Else $Name
     Local       : Field : DBGSSGodownName    : Set As : $GodownName
     Local       : Field : DBGSSClosingQty    : Set As : If $$IsEmpty:$StkClBalance Then $ClosingBalance Else $StkClBalance
@@ -77,6 +84,12 @@
     Width  : 40
     XMLTag : "stockItem"
 
+[Field: DBGSSStockItemGuid]
+    Use    : Name Field
+    Set As : $Guid
+    Width  : 36
+    XMLTag : "itemGuid"
+
 [Field: DBGSSBatchName]
     Use    : Name Field
     Set As : ""
@@ -88,6 +101,18 @@
     Set As : ""
     Width  : 24
     XMLTag : "godown"
+
+[Field: DBGSSAsOnDate]
+    Use    : Name Field
+    Set As : (($$YearOfDate:##SVToDate) * 10000) + (($$MonthOfDate:##SVToDate) * 100) + $$DayOfDate:##SVToDate
+    Width  : 10
+    XMLTag : "asOnDate"
+
+[Field: DBGSSSourceCompany]
+    Use    : Name Field
+    Set As : ##SVCurrentCompany
+    Width  : 40
+    XMLTag : "sourceCompany"
 
 [Field: DBGSSClosingQty]
     Use    : Simple Field
