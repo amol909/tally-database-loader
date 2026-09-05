@@ -20,6 +20,7 @@ export class YamlReportExporter {
             if (substitutions && substitutions.size) {
                 xml = substituteTDLParameters(xml, substitutions);
             }
+            xml = dropUnresolvedStaticVariables(xml);
             const httpTimer = new PhaseTimer(this.metrics, this.metricBase('tally_http', targetTable, tableConfig.collection));
             let output;
             try {
@@ -57,6 +58,29 @@ export class YamlReportExporter {
         };
     }
 }
+/**
+ * The methods a set of TDL filter expressions reads off each object, e.g. `NOT $IsCancelled` reads
+ * `IsCancelled`. `$$Function:...` calls are skipped - the doubled `$` is a function call, not a
+ * method on the object being filtered - but their `$Method` arguments still count.
+ */
+export function methodsReferencedInFilters(filters) {
+    const found = new Set();
+    for (const expression of filters) {
+        for (const match of expression.matchAll(/(?<!\$)\$([A-Za-z][A-Za-z0-9_]*)/g)) {
+            found.add(match[1]);
+        }
+    }
+    return [...found];
+}
+/**
+ * A collection that filters on a method it has not fetched makes Tally load the complete object to
+ * read that one method - for a Voucher that means every ledger entry, inventory entry and
+ * allocation, per voucher, to evaluate a boolean. Fetching what the filters read keeps the scan on
+ * the fetched methods instead. Guid and AlterId are always included: the diff report selects them.
+ */
+export function diffFetchList(filters) {
+    return [...new Set(['Guid', 'AlterId', ...methodsReferencedInFilters(filters || [])])];
+}
 export function withAdditionalFilters(tableConfig, filters) {
     return {
         ...tableConfig,
@@ -90,7 +114,7 @@ export function processTdlOutputManipulation(txt) {
     return retval;
 }
 export function generateXMLfromYAML(tblConfig) {
-    let retval = `<?xml version="1.0" encoding="utf-8"?><ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Data</TYPE><ID>TallyDatabaseLoaderReport</ID></HEADER><BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>XML</SVEXPORTFORMAT></STATICVARIABLES><TDL><TDLMESSAGE><REPORT NAME="TallyDatabaseLoaderReport"><FORMS>MyForm</FORMS></REPORT><FORM NAME="MyForm"><PARTS>MyPart</PARTS></FORM><PART NAME="MyPart"><LINES>MyLine</LINES><REPEAT>MyLine : MyCollection</REPEAT><SCROLLED>Vertical</SCROLLED></PART><LINE NAME="MyLine"><FIELDS>`;
+    let retval = `<?xml version="1.0" encoding="utf-8"?><ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Data</TYPE><ID>TallyDatabaseLoaderReport</ID></HEADER><BODY><DESC><STATICVARIABLES><SVEXPORTFORMAT>XML</SVEXPORTFORMAT><SVFROMDATE>{fromDate}</SVFROMDATE><SVTODATE>{toDate}</SVTODATE><SVCURRENTCOMPANY>{targetCompany}</SVCURRENTCOMPANY></STATICVARIABLES><TDL><TDLMESSAGE><REPORT NAME="TallyDatabaseLoaderReport"><FORMS>MyForm</FORMS></REPORT><FORM NAME="MyForm"><PARTS>MyPart</PARTS></FORM><PART NAME="MyPart"><LINES>MyLine</LINES><REPEAT>MyLine : MyCollection</REPEAT><SCROLLED>Vertical</SCROLLED></PART><LINE NAME="MyLine"><FIELDS>`;
     for (let i = 0; i < tblConfig.fields.length; i++) {
         retval += `Fld${utility.Number.format(i + 1, '00')},`;
     }
@@ -154,6 +178,17 @@ function substituteTDLParameters(msg, substitutions) {
             retval = retval.replace(regPtrn, v ? 'Yes' : 'No');
     });
     return retval;
+}
+/**
+ * Static variables pin the request to a period and company so it does not inherit whatever the
+ * Tally UI happens to have open. Any that were not supplied are removed rather than sent with an
+ * unsubstituted placeholder, which restores the previous "let Tally decide" behaviour for that
+ * one variable instead of asking Tally to parse "{fromDate}".
+ */
+function dropUnresolvedStaticVariables(xml) {
+    return xml
+        .replace(/<SV[A-Z]+>\{\w+\}<\/SV[A-Z]+>/g, '')
+        .replace(/<SVCURRENTCOMPANY>##SVCurrentCompany<\/SVCURRENTCOMPANY>/g, '');
 }
 function countRows(transformed) {
     if (!transformed.trim()) {

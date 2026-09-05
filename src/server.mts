@@ -4,6 +4,7 @@ import child_process from 'child_process';
 import path from 'path';
 import { WebSocketServer } from 'ws';
 import { connectionConfig, tallyConfig } from './definition.mjs';
+import { withTallyLock } from './tally-lock.mjs';
 
 const httpPort = 8997;
 const wsPort = 8998;
@@ -49,6 +50,10 @@ function runSyncProcess(configObj: any) {
 }
 
 function postTallyXML(tallyServer: string, tallyPort: number, payload: string): Promise<string> {
+    return withTallyLock(tallyServer, tallyPort, 'gui request', () => postTallyXMLUnlocked(tallyServer, tallyPort, payload));
+}
+
+function postTallyXMLUnlocked(tallyServer: string, tallyPort: number, payload: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
         try {
             let req = http.request({

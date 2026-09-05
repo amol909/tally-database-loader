@@ -19,3 +19,4 @@ tallydb-service.bat
 *.duckdb
 bigquery-credentials.json
 adls-config.json
+.DS_Store

@@ -101,6 +101,14 @@ export interface tableConfigYAML {
     nature: string;
     fields: fieldConfigYAML[];
     filters?: string[];
+    /**
+     * Filter set used for the incremental _diff request instead of `filters`. The diff only needs
+     * guid and alterid to spot deleted and modified rows, so it may use a looser (superset) filter
+     * when the full set is expensive for Tally to evaluate. A superset can only delete fewer rows,
+     * never more. The trade-off is that a row which drops out of `filters` but stays in
+     * `diff_filters` is not detected as deleted, so keep filters that govern deletion here.
+     */
+    diff_filters?: string[];
     fetch?: string[];
     subcollections?: tableConfigYAML[];
     cascade_update?: tableFieldYAML[];

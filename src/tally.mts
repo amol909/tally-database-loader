@@ -10,8 +10,10 @@ import { logger } from './logger.mjs';
 import { database } from './database.mjs';
 import { tallyConfig, tableConfigYAML, companyInfo, collectionConfigJSON, tableConfigJSON, fieldConfigJSON } from './definition.mjs';
 import { MetricsSink, PhaseTimer } from './metrics.mjs';
-import { HttpTallyTransport, TallyTransport } from './tally-transport.mjs';
-import { YamlReportExporter, withAdditionalFilters, processTdlOutputManipulation } from './yaml-report-exporter.mjs';
+import { HttpTallyTransport, TallyTransport, tallyRequestTimeoutMs } from './tally-transport.mjs';
+import { withTallyLock } from './tally-lock.mjs';
+import { diffTableAllowList, isSkipEnabled, isSyncStripped, logActiveDiagnosticFlags } from './diagnostic-flags.mjs';
+import { YamlReportExporter, withAdditionalFilters, processTdlOutputManipulation, diffFetchList } from './yaml-report-exporter.mjs';
 
 export interface incrementalMasterSyncTarget {
     table: tableConfigYAML;
@@ -47,6 +49,10 @@ class _tally {
     private metrics: MetricsSink;
     private transport: TallyTransport;
 
+    //delete detection refuses to run when the Tally export collapses below this fraction of the
+    //stored row count, because a truncated response is indistinguishable from a bulk deletion
+    private readonly diffCollapseThreshold = 0.9;
+
     constructor() {
         try {
             this.config = JSON.parse(fs.readFileSync('./config.json', 'utf8'))['tally'];
@@ -64,7 +70,7 @@ class _tally {
             };
         }
         this.metrics = new MetricsSink();
-        this.transport = new HttpTallyTransport(this.config);
+        this.transport = new HttpTallyTransport(this.config, this.metrics);
     }
 
     updateCommandlineConfig(lstConfigs: Map<string, string>): void {
@@ -82,7 +88,7 @@ class _tally {
             if (lstConfigs.has('tally-batchsize')) this.config.batchsize = parseInt(lstConfigs.get('tally-batchsize') || '5000');
             if (lstConfigs.has('tally-frequency')) this.config.frequency = parseInt(lstConfigs.get('tally-frequency') || '0');
             if (lstConfigs.has('tally-company')) this.config.company = lstConfigs.get('tally-company') || '';
-            this.transport = new HttpTallyTransport(this.config);
+            this.transport = new HttpTallyTransport(this.config, this.metrics);
 
             //flags
             if (lstConfigs.has('tally-master')) this.importMaster = lstConfigs.get('tally-master') == 'true';
@@ -123,6 +129,44 @@ class _tally {
                 `Incremental sync requires an incremental export definition. Current definition "${this.config.definition}" is missing "alterid" in: ${missingAlterIdTables.join(', ')}.`,
                 'Set tally.definition to "tally-export-config-incremental.yaml".'
             ].join(' '));
+        }
+    }
+
+    /**
+     * The delete-detection sequence, narrowed by the diagnostic flags. Running one collection's
+     * scan alone separates a request that is expensive in itself from one that only becomes
+     * expensive after Tally has already served the scans that normally precede it.
+     */
+    private selectDiffTables(lstPrimaryTables: tableConfigYAML[]): tableConfigYAML[] {
+        if (isSkipEnabled('skipDiff')) {
+            return [];
+        }
+
+        const allowList = diffTableAllowList();
+        if (!allowList) {
+            return lstPrimaryTables;
+        }
+
+        return lstPrimaryTables.filter(table => allowList.includes(table.name.toLowerCase()));
+    }
+
+    /**
+     * An empty or badly short _diff makes "guid not in (select guid from _diff)" true for every
+     * row, wiping the primary table and every cascade_delete child table. Tally crashing
+     * mid-export produces exactly that response, so fail the run and retry next tick instead.
+     */
+    private async validateDiffBeforeDeleteDetection(activeTable: tableConfigYAML, countDiffRows: number): Promise<void> {
+        const countStoredRows = await database.executeScalar<number>(`select count(*) as c from ${activeTable.name};`) || 0;
+        if (countStoredRows == 0) {
+            return; //nothing stored yet, delete detection cannot lose anything
+        }
+
+        if (!Number.isFinite(countDiffRows) || countDiffRows <= 0) {
+            throw new Error(`Aborting sync: Tally returned no rows for ${activeTable.name} while the database holds ${countStoredRows} row(s). Proceeding would delete every row in that table and its dependent tables. Check Tally is running and the company is open, then re-run.`);
+        }
+
+        if (countDiffRows < Math.floor(countStoredRows * this.diffCollapseThreshold) && !/^(1|true|yes)$/i.test(process.env['TALLY_ALLOW_BULK_DELETE'] || '')) {
+            throw new Error(`Aborting sync: Tally returned ${countDiffRows} row(s) for ${activeTable.name} but the database holds ${countStoredRows}, which would delete ${countStoredRows - countDiffRows} row(s) plus dependent rows. A truncated Tally response looks identical to a real bulk deletion. If the deletion is real, set TALLY_ALLOW_BULK_DELETE=1 for one run.`);
         }
     }
 
@@ -255,11 +299,16 @@ class _tally {
 
                         //prepare substitution list of runtime values to reflected in TDL XML
                         let configTallyXML = new Map<string, any>();
-                        configTallyXML.set('fromDate', utility.Date.parse(this.config.fromdate, 'yyyy-MM-dd'));
-                        configTallyXML.set('toDate', utility.Date.parse(this.config.todate, 'yyyy-MM-dd'));
-                        configTallyXML.set('targetCompany', this.config.company ? utility.String.escapeHTML(this.config.company) : '##SVCurrentCompany');
+                        //leaving the dates unset leaves {fromDate}/{toDate} unsubstituted, which the exporter
+                        //then strips, so the report runs unscoped instead of across the whole books period
+                        if (!isSkipEnabled('skipPeriod')) {
+                            configTallyXML.set('fromDate', utility.Date.parse(this.config.fromdate, 'yyyy-MM-dd'));
+                            configTallyXML.set('toDate', utility.Date.parse(this.config.todate, 'yyyy-MM-dd'));
+                        }
+                        configTallyXML.set('targetCompany', this.config.company || '##SVCurrentCompany'); //substituteTDLParameters escapes it
 
                         logger.logMessage('Performing incremental sync [%s]', new Date().toLocaleString());
+                        logActiveDiagnosticFlags();
 
                         await this.recordPhase('updateLastAlterId', () => this.updateLastAlterId()); //Update last alter ID
                         let lastAlterIdMasterTally = this.lastAlterIdMaster;
@@ -283,8 +332,11 @@ class _tally {
                         if (flgIsTransactionChanged) {
                             lstPrimaryTables.push(...this.lstTableTransactionYaml.filter(p => p.nature == 'Primary'));
                         }
-                        for (let i = 0; i < lstPrimaryTables.length; i++) {
-                            let activeTable = lstPrimaryTables[i];
+                        const diffTables = this.selectDiffTables(lstPrimaryTables);
+                        for (let i = 0; i < diffTables.length; i++) {
+                            let activeTable = diffTables[i];
+                            logger.logMessage('  detecting deletions in %s', activeTable.name);
+                            const diffFilters = activeTable.diff_filters || activeTable.filters;
                             await database.executeNonQuery('truncate table _diff;');
                             await database.executeNonQuery('truncate table _delete;');
                             let tempTable: tableConfigYAML = {
@@ -303,12 +355,14 @@ class _tally {
                                     }
                                 ],
                                 nature: '',
-                                fetch: ['AlterId'],
-                                filters: activeTable.filters
+                                fetch: diffFetchList(diffFilters),
+                                //diff_filters lets an expensive filter be dropped from the diff scan only
+                                filters: diffFilters
                             };
                             await this.processReport('_diff', tempTable, configTallyXML);
-                            await this.recordPhase('diff_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/_diff.data`), '_diff', tempTable.fields.map(p => p.type)));
+                            let countDiffRows = await this.recordPhase('diff_load', () => database.bulkLoad(path.join(process.cwd(), `./csv/_diff.data`), '_diff', tempTable.fields.map(p => p.type)));
                             fs.unlinkSync(path.join(process.cwd(), `./csv/_diff.data`)); //delete temporary file
+                            await this.validateDiffBeforeDeleteDetection(activeTable, countDiffRows);
 
                             //insert into delete list rows there were deleted in current data compared to previous one
                             await this.recordPhase('delete_detection', () => database.executeNonQuery(`insert into _delete select guid from ${activeTable.name} where guid not in (select guid from _diff);`));
@@ -332,7 +386,7 @@ class _tally {
 
                         // iterate through Master tables to extract modified and added rows in Tally data
                         // Stock balances are refreshed by the custom godown stock snapshot after sync.
-                        if (lstMasterTablesToSync.length) {
+                        if (lstMasterTablesToSync.length && !isSkipEnabled('skipMasters')) {
                             for (let i = 0; i < lstMasterTablesToSync.length; i++) {
                                 const syncTarget = lstMasterTablesToSync[i];
                                 let activeTable = syncTarget.table;
@@ -352,7 +406,7 @@ class _tally {
                         }
 
                         // iterate through Transaction table to extract modifed and added rows in Tally data
-                        if (flgIsTransactionChanged) {
+                        if (flgIsTransactionChanged && !isSkipEnabled('skipTransactions')) {
                             for (let i = 0; i < this.lstTableTransactionYaml.length; i++) {
                                 let activeTable = this.lstTableTransactionYaml[i];
 
@@ -391,7 +445,7 @@ class _tally {
                             }
                         }
 
-                        if (flgIsTransactionChanged) {
+                        if (flgIsTransactionChanged && !isSkipEnabled('skipVoucherNumber')) {
                             //check if any Voucher Type is set to auto numbering
                             //automatic voucher number shifts voucher numbers of all subsequent date vouchers on insertion of in-between vouchers which requires updation
                             let countAutoNumberVouchers = await database.executeScalar<number>(`select count(*) as c from mst_vouchertype where numbering_method like '%Auto%' ;`);
@@ -444,7 +498,14 @@ class _tally {
                         await database.executeNonQuery('truncate table _diff ;');
                         await database.executeNonQuery('truncate table _delete ;');
                         await database.executeNonQuery('truncate table _vchnumber ;');
-                        await this.recordPhase('saveCompanyInfo', () => this.saveCompanyInfo(true));
+                        //a stripped run skipped work the checkpoint would claim was imported, so hold the
+                        //watermark back and let the next complete run pick those changes up again
+                        if (isSyncStripped()) {
+                            logger.logMessage('  skipping AlterID checkpoint update: diagnostic flags were set for this run');
+                        }
+                        else {
+                            await this.recordPhase('saveCompanyInfo', () => this.saveCompanyInfo(true));
+                        }
                     }
                     else
                         logger.logMessage('Incremental Sync is supported only for SQL Server / MySQL / PostgreSQL');
@@ -544,7 +605,7 @@ class _tally {
                     let configTallyXML = new Map<string, any>();
                     configTallyXML.set('fromDate', utility.Date.parse(this.config.fromdate, 'yyyy-MM-dd'));
                     configTallyXML.set('toDate', utility.Date.parse(this.config.todate, 'yyyy-MM-dd'));
-                    configTallyXML.set('targetCompany', this.config.company ? utility.String.escapeHTML(this.config.company) : '##SVCurrentCompany');
+                    configTallyXML.set('targetCompany', this.config.company || '##SVCurrentCompany'); //substituteTDLParameters escapes it
 
 
                     if (this.isDefinitionYAML) {
@@ -780,6 +841,10 @@ class _tally {
     };
 
     private saveTallyXMLResponse(msg: string, filename: string): Promise<void> {
+        return withTallyLock(this.config.server, this.config.port, `tally export to ${filename}`, () => this.saveTallyXMLResponseUnlocked(msg, filename));
+    }
+
+    private saveTallyXMLResponseUnlocked(msg: string, filename: string): Promise<void> {
         return new Promise<void>((resolve, reject) => {
             try {
                 let strResponse = fs.createWriteStream(filename, { encoding: 'utf16le' });
@@ -809,7 +874,7 @@ class _tally {
                     logger.logError('tally.saveTallyXMLResponse()', reqError['message'] || '');
                     reject(reqError);
                 });
-                req.setTimeout(180000, () => {
+                req.setTimeout(tallyRequestTimeoutMs(), () => {
                     req.destroy(new Error('Tally request timed out'));
                 });
                 strResponse.on('finish', () => {

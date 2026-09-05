@@ -4,6 +4,7 @@ import { logger } from './logger.mjs';
 import { createSyncStatus, updateSyncStatus, writeSyncStatus } from './status.mjs';
 import { tally } from './tally.mjs';
 import { refreshGodownStockSummary } from './godown-stock-summary.mjs';
+import { isSkipEnabled } from './diagnostic-flags.mjs';
 import { buildNoChangeSyncRunPing, recordSyncRunPing } from './sync-run-ping.mjs';
 import { buildVoucherInventoryIncrementalOptions, readLastTransactionAlterId, readVoucherInventoryStartAlterId, refreshVoucherInventoryLines } from './voucher-inventory-lines.mjs';
 let isSyncRunning = false;
@@ -77,6 +78,21 @@ export async function inspectChangeState(config) {
         logger.setConsoleEnabled(true);
     }
 }
+//stands in for a skipped godown snapshot so the run ping still reports a well-formed zero result
+function emptyGodownStockRefreshResult(config) {
+    return {
+        rowCount: 0,
+        snapshotId: '',
+        sourceCompany: config.company,
+        asOnDate: '',
+        rawRows: 0,
+        acceptedRows: 0,
+        positiveRows: 0,
+        negativeRows: 0,
+        zeroRows: 0,
+        rejectedRows: 0
+    };
+}
 async function invokeImport() {
     const runStartedAt = new Date();
     try {
@@ -90,9 +106,20 @@ async function invokeImport() {
             });
         }
         await tally.importData();
-        const voucherInventoryEndAlterId = await readLastTransactionAlterId();
-        const voucherRows = await refreshVoucherInventoryLines(tally.config, buildVoucherInventoryIncrementalOptions(voucherInventoryStartAlterId, voucherInventoryEndAlterId));
-        const stock = await refreshGodownStockSummary(tally.config);
+        let voucherRows = 0;
+        if (isSkipEnabled('skipVoucherInventory')) {
+            logger.logMessage('Skipping voucher inventory refresh: TALLY_SKIP_VOUCHER_INVENTORY is set');
+        }
+        else {
+            const voucherInventoryEndAlterId = await readLastTransactionAlterId();
+            voucherRows = await refreshVoucherInventoryLines(tally.config, buildVoucherInventoryIncrementalOptions(voucherInventoryStartAlterId, voucherInventoryEndAlterId));
+        }
+        const stock = isSkipEnabled('skipGodownStock')
+            ? emptyGodownStockRefreshResult(tally.config)
+            : await refreshGodownStockSummary(tally.config);
+        if (isSkipEnabled('skipGodownStock')) {
+            logger.logMessage('Skipping godown stock summary refresh: TALLY_SKIP_GODOWN_STOCK is set');
+        }
         const customRows = stock.rowCount + voucherRows;
         await recordSyncRunPing({
             operation: 'sync',

@@ -17,6 +17,13 @@ export interface MetricEvent {
     dbTechnology?: string;
     loadMethod?: string;
     calls?: number;
+    //Tally request detail: lock wait is measured separately because it used to be indistinguishable
+    //from Tally's own report-build time inside the tally_http phase
+    lockWaitMs?: number;
+    ttfbMs?: number;
+    xmlSha256?: string;
+    xmlBytes?: number;
+    responseBytes?: number;
 }
 
 export class MetricsSink {

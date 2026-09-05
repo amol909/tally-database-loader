@@ -391,6 +391,13 @@ transaction:
       - NOT $IsCancelled
       - NOT $IsOptional
       - ($$IsInventoryVch:$VoucherTypeName OR $VoucherTypeName = "Sales")
+    # Tally evaluates all three filters together pathologically: measured 146.6s combined against
+    # 10.7s without the inventory-voucher test, on identical data. The diff scan only needs to spot
+    # deleted and modified vouchers, and a superset filter cannot cause a false delete, so the
+    # expensive test is dropped here and kept on the real export above.
+    diff_filters:
+      - NOT $IsCancelled
+      - NOT $IsOptional
     fields:
       - name: guid
         field: Guid
